@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from .paths import source_status
 from .pipeline import IngestStats, ingest
 from .sources import Fetcher, build, load_entries
+from .sources.backends import RateLimited
 from .sources.detect import detect, remember
 from .storage import Store, open_store
 
@@ -216,7 +217,9 @@ def run_scrape(entries: list[dict], db_path, log: Log = print, limit: int = 0, d
                 n = 0
                 stats = IngestStats()
                 progress(done=i, total=len(entries), current=e["name"])
-                _save_status(e["name"], scrape_running=True)
+                started = time.monotonic()
+                _save_status(e["name"], scrape_running=True, scrape_started_at=_now(), scrape_so_far=0)
+                outcome = "done"
                 _reset_stats(fetcher)
                 fetcher.page_sink = _archive(store, e["name"])
                 log(f"{e['name']}: scraping...")
@@ -228,11 +231,20 @@ def run_scrape(entries: list[dict], db_path, log: Log = print, limit: int = 0, d
                         n += 1
                         if verbose or n % 25 == 0:
                             log(f"  {n}: [{product.category.value}] {product.name}")
+                            _save_status(e["name"], scrape_so_far=n)
+                except RateLimited as ex:
+                    outcome = "rate limited"
+                    log(f"{e['name']}: stopped after {n} products ({ex})")
                 except Exception as ex:
+                    outcome = "error"
                     log(f"{e['name']}: stopped after {n} products ({type(ex).__name__}: {ex})")
+                if cancel and cancel.is_set():
+                    outcome = "stopped"
                 counts[e["name"]] = stats.stored
                 _save_status(e["name"], last_scrape_count=stats.stored, last_scraped_at=_now(),
-                             last_rejected=stats.rejected, last_fixes=stats.fixes, scrape_running=False)
+                             last_rejected=stats.rejected, last_fixes=stats.fixes, scrape_running=False,
+                             last_scrape_seconds=round(time.monotonic() - started),
+                             last_scrape_outcome=outcome)
                 log(f"{e['name']}: {stats.line()}")
                 if hasattr(fetcher, "summary"):
                     log(f"  scrapers used: {fetcher.summary()}")

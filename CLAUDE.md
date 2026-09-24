@@ -119,6 +119,9 @@ og:image from the product's page, then to an SVG placeholder.
 **Frontend** (`web/src/`)
 - Pages: Advisor, Browse, Compare, Deals, Sources (data sources, Check/Update, job progress),
   ProductDetail. Components PriceTag and DeviceImage.
+- Sources page "Scraping" column, from `source_status.json` fields set in `run_scrape`: `scrape_started_at`,
+  `scrape_so_far` (every 25 items), `last_scrape_seconds`, `last_scrape_outcome` (done/stopped/rate limited/error).
+  It shows Scraping now / Next up / Waiting · N sites ahead / In line · #n / Done N ago (took …) / never scraped.
 - `stored.ts` `useStored`: filters and typed text on Advisor/Browse/Deals are kept in localStorage.
   Advisor has a "Start over" button.
 
