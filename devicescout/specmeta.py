@@ -13,7 +13,9 @@ C = Category
 CATEGORY_LABELS = {
     C.PHONE: "Phones", C.LAPTOP: "Laptops", C.TABLET: "Tablets", C.SMARTWATCH: "Smartwatches",
     C.POWER_BANK: "Power banks", C.CHARGER: "Chargers", C.EARBUDS: "Earbuds", C.CASE: "Cases",
-    C.CABLE: "Cables", C.ACCESSORY: "Accessories",
+    C.CABLE: "Cables", C.ACCESSORY: "Accessories", C.SPEAKER: "Speakers", C.TV: "TVs", C.MONITOR: "Monitors",
+    C.CAMERA: "Cameras", C.CONSOLE: "Gaming consoles", C.NETWORKING: "Networking", C.STORAGE: "Storage",
+    C.APPLIANCE: "Home appliances", C.UNKNOWN: "Other",
 }
 
 # key -> (label, unit, group)

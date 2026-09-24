@@ -12,7 +12,7 @@ from .paths import source_status
 from .pipeline import IngestStats, ingest
 from .sources import Fetcher, build, load_entries
 from .sources.detect import detect, remember
-from .storage import Store
+from .storage import Store, open_store
 
 Log = Callable[[str], None]
 
@@ -34,7 +34,8 @@ def _save_status(name: str, **fields) -> None:
     source_status().write_text(json.dumps(data, indent=2))
 
 
-def crawl_entry(entry: dict, fetcher, limit: int):
+def crawl_entry(entry: dict, fetcher, limit: int | None):
+    limit = limit or 10**9            # 0/None: everything the site has
     if entry.get("delay") and hasattr(fetcher, "host_delay"):
         from urllib.parse import urlparse
         host = entry.get("domain") or urlparse(entry.get("base_url", "")).netloc
@@ -53,6 +54,18 @@ def crawl_entry(entry: dict, fetcher, limit: int):
 Progress = Callable[..., None]
 
 
+def _archive(store, source: str):
+    """page_sink that keeps every fetched page in the raw layer, under its website."""
+    def sink(url, page, scraper):
+        headers = getattr(page, "headers", None) or {}
+        try:
+            ctype = next((str(v) for k, v in dict(headers).items() if k.lower() == "content-type"), None)
+        except (TypeError, ValueError):
+            ctype = None
+        store.record_page(source, url, getattr(page, "status", None), scraper, ctype, getattr(page, "body", b""))
+    return sink
+
+
 def _noop(**_) -> None:
     pass
 
@@ -64,7 +77,7 @@ def _reset_stats(fetcher) -> None:
 
 def run_check(entries: list[dict], log: Log = print, sample: int = 3, delay: float = 1.5,
               fetcher_factory=Fetcher, cancel: threading.Event | None = None,
-              progress: Progress = _noop) -> list[dict]:
+              progress: Progress = _noop, db_path=None) -> list[dict]:
     """Detect each source's platform and pull a few products; report what works.
 
     OK       products with prices (or, for spec/review sources, with specs)
@@ -72,6 +85,7 @@ def run_check(entries: list[dict], log: Log = print, sample: int = 3, delay: flo
     FAIL     nothing usable
     """
     results = []
+    store = open_store(db_path) if db_path else None
     with fetcher_factory(delay=delay) as fetcher:
         for i, e in enumerate(entries):
             if cancel and cancel.is_set():
@@ -80,10 +94,12 @@ def run_check(entries: list[dict], log: Log = print, sample: int = 3, delay: flo
             progress(done=i, total=len(entries), current=e["name"])
             _save_status(e["name"], check="RUNNING", checked_at=_now())
             _reset_stats(fetcher)
+            if store is not None:
+                fetcher.page_sink = _archive(store, e["name"])
             status, detail = "FAIL", ""
             try:
                 if e.get("type", "auto") == "auto":
-                    report = detect(fetcher, e["base_url"])
+                    report = detect(fetcher, e["base_url"], e.get("start_urls"), e.get("region", "np"))
                     remember(e["name"], report)
                     detail = f"{report['platform']}: {report['evidence']}"
                 got = []
@@ -111,14 +127,16 @@ def run_check(entries: list[dict], log: Log = print, sample: int = 3, delay: flo
             results.append({"name": e["name"], "status": status, "detail": detail})
             log(f"{e['name']:<15} {status:<7} {detail}")
         progress(done=len(results), total=len(entries), current=None)
+    if store is not None:
+        store.close()
     return results
 
 
-def run_scrape(entries: list[dict], db_path, log: Log = print, limit: int = 300, delay: float = 2.0,
+def run_scrape(entries: list[dict], db_path, log: Log = print, limit: int = 0, delay: float = 2.0,
                mode: str = "static", respect_robots: bool = True, fetcher_factory=Fetcher,
                cancel: threading.Event | None = None, verbose: bool = False,
                progress: Progress = _noop) -> dict[str, int]:
-    store = Store(db_path)
+    store = open_store(db_path)
     counts: dict[str, int] = {}
     try:
         with fetcher_factory(mode=mode, delay=delay, respect_robots=respect_robots) as fetcher:
@@ -128,6 +146,7 @@ def run_scrape(entries: list[dict], db_path, log: Log = print, limit: int = 300,
                 progress(done=i, total=len(entries), current=e["name"])
                 _save_status(e["name"], scrape_running=True)
                 _reset_stats(fetcher)
+                fetcher.page_sink = _archive(store, e["name"])
                 log(f"{e['name']}: scraping...")
                 try:
                     for product in crawl_entry(e, fetcher, limit):
@@ -166,7 +185,7 @@ def select_entries(sources_path: str, names: list[str]) -> list[dict]:
 
 def execute(job: dict, db_path, sources_path, fetcher_factory=Fetcher) -> str:
     """Run one claimed job, streaming its log and progress into the jobs table."""
-    store = Store(db_path)
+    store = open_store(db_path)
     cancel = threading.Event()
 
     def log(line: str) -> None:
@@ -183,10 +202,11 @@ def execute(job: dict, db_path, sources_path, fetcher_factory=Fetcher) -> str:
         if not entries:
             log("no matching sources")
         elif job["kind"] == "check":
-            run_check(entries, log=log, progress=progress, cancel=cancel, fetcher_factory=fetcher_factory)
+            run_check(entries, log=log, progress=progress, cancel=cancel, fetcher_factory=fetcher_factory,
+                      db_path=db_path)
         else:
             run_scrape(entries, db_path, log=log, progress=progress, cancel=cancel,
-                       limit=job.get("limit_n") or 300, fetcher_factory=fetcher_factory)
+                       limit=job.get("limit_n") or 0, fetcher_factory=fetcher_factory)
         if cancel.is_set():
             status = "cancelled"
     except Exception as ex:
@@ -210,7 +230,7 @@ class LocalWorker:
         self._wake.set()
 
     def _loop(self) -> None:
-        store = Store(self.db_path)
+        store = open_store(self.db_path)
         store.fail_stale_jobs()
         while True:
             job = store.claim_job()

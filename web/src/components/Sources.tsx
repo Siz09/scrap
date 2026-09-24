@@ -291,6 +291,10 @@ export default function Sources() {
                     {r.scrape_running ? <span className="badge"><span className="spinner inline" />Updating…</span>
                       : r.last_scraped_at ? <>{r.last_scrape_count} items{r.last_rejected ? <span className="muted small"> ({r.last_rejected} rejected)</span> : null}<div className="muted small">{relTime(r.last_scraped_at)}</div></>
                       : <span className="muted">—</span>}
+                    {r.raw_pages || r.raw_records ? (
+                      <div className="muted small" title="Kept in the raw layer exactly as fetched, so it can be re-cleaned later without scraping again">
+                        stored: {(r.raw_pages ?? 0).toLocaleString()} pages · {(r.raw_records ?? 0).toLocaleString()} records
+                      </div>) : null}
                   </td>
                   {canRun && (
                     <td className="row-actions">

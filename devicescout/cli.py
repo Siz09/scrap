@@ -31,7 +31,7 @@ from .jobs import run_check, run_scrape
 from .paths import default_db, sources_path
 from .sources import Fetcher, GenericSource, GSMArenaSource, SiteConfig, load_entries
 from .sources.detect import cached_platform
-from .storage import Store
+from .storage import Store, open_store
 
 MUST_FLAGS = {  # cli flag -> (spec key, op, cast)
     "min_ram": ("ram_gb", ">=", float), "min_storage": ("storage_gb", ">=", float),
@@ -67,7 +67,7 @@ def cmd_sources(args) -> None:
 
 def cmd_check(args) -> None:
     """Detect platform and pull a few products from each source; report what works."""
-    rows = run_check(_entries(args), sample=args.sample, delay=args.delay, fetcher_factory=Fetcher)
+    rows = run_check(_entries(args), sample=args.sample, delay=args.delay, fetcher_factory=Fetcher, db_path=args.db)
     counts = {k: sum(1 for r in rows if r["status"] == k) for k in ("OK", "PARTIAL", "FAIL")}
     print(f"\n{counts['OK']} working, {counts['PARTIAL']} partial, {counts['FAIL']} failing of {len(rows)}. "
           f"Fix sources in {args.sources} (start_urls, url_include, fetch_mode).")
@@ -92,7 +92,7 @@ def cmd_parse_file(args) -> None:
         sys.exit("no product found on page")
     if args.save:
         from .pipeline import ingest
-        ingest(Store(args.db), product)
+        ingest(open_store(args.db), product)
     print(json.dumps(product.to_dict(), indent=2, default=str))
 
 
@@ -210,7 +210,7 @@ def _print_advice(a: Advice) -> None:
 
 def cmd_advise(args) -> None:
     needs = _needs_interactive() if args.interactive else _needs_from_args(args)
-    advice = advise(Store(args.db).products(needs.category), needs)
+    advice = advise(open_store(args.db).products(needs.category), needs)
     if args.json:
         print(json.dumps(advice.to_dict(), indent=2, default=str))
     else:
@@ -230,7 +230,7 @@ def cmd_ask(args) -> None:
     parsed = parse_query(" ".join(args.text))
     print("Understood: " + (" | ".join(parsed.understood) or "nothing specific (showing all-rounders)"))
     needs = needs_from_query(parsed, top=args.top)
-    advice = advise(Store(args.db).products(needs.category), needs)
+    advice = advise(open_store(args.db).products(needs.category), needs)
     if args.json:
         print(json.dumps({"parsed": parsed.to_dict(), "advice": advice.to_dict()}, indent=2, default=str))
     else:
@@ -243,6 +243,34 @@ def _duration(text: str) -> float:
     if not m:
         raise argparse.ArgumentTypeError(f"not a duration: {text!r} (use e.g. 30m, 6h, 1d)")
     return float(m.group(1)) * {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
+
+
+def _import_legacy(store) -> None:
+    """First start on PostgreSQL: bring over what the older SQLite database collected."""
+    from .paths import legacy_db
+    from .pgstore import PgStore, import_sqlite
+    old = legacy_db()
+    if isinstance(store, PgStore) and old.exists() and store._raw_count() == 0:
+        try:
+            import_sqlite(old, store)
+            old.rename(old.with_suffix(".db.imported"))
+        except Exception as e:
+            print(f"could not import {old}: {e}", flush=True)
+
+
+def cmd_import_sqlite(args) -> None:
+    from .pgstore import PgStore, import_sqlite
+    store = open_store(args.db)
+    if not isinstance(store, PgStore):
+        sys.exit("--db (or DEVICESCOUT_DB) must be a postgresql:// URL")
+    import_sqlite(args.path, store)
+
+
+def cmd_raw(args) -> None:
+    rows = open_store(args.db).raw_summary()
+    print(f"{'website':<16} {'pages':>8} {'records':>8}  last seen")
+    for r in rows:
+        print(f"{r['source']:<16} {r['pages']:>8} {r['records']:>8}  {r['last_seen'] or ''}")
 
 
 def cmd_schedule(args) -> None:
@@ -258,8 +286,9 @@ def cmd_schedule(args) -> None:
     stop = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())
-    store = Store(args.db)
+    store = open_store(args.db)
     store.fail_stale_jobs()
+    _import_legacy(store)
 
     def say(line: str) -> None:
         print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}", flush=True)
@@ -284,10 +313,19 @@ def cmd_schedule(args) -> None:
     from .sources.backends import describe
     store.set_kv("worker_scrapers", json.dumps(describe()))   # what *this* container can run, for the website
     heartbeat()
-    if args.check_first:
+    if args.start_in:
+        say(f"first scheduled run in {args.start_in / 3600:.1f} h; watching for jobs from the website")
+        begin = time.monotonic() + args.start_in
+        while not stop.is_set() and time.monotonic() < begin:
+            heartbeat()
+            drain()
+            stop.wait(5)
+    if args.check_first and not stop.is_set():
         run("check", "schedule")
     while not stop.is_set():
         run("scrape", "schedule")
+        if stop.is_set():
+            break
         if args.once:
             break
         next_run = time.monotonic() + args.every + random.uniform(0, args.jitter)
@@ -302,7 +340,7 @@ def cmd_schedule(args) -> None:
 def cmd_deals(args) -> None:
     from .deals import find_deals
     category = Category(args.category) if args.category else None
-    deals = find_deals(Store(args.db), category, verified_only=not args.all)
+    deals = find_deals(open_store(args.db), category, verified_only=not args.all)
     if not deals:
         print("No deals right now." + ("" if args.all else " (--all also shows unverified store claims)"))
     for d in deals[: args.limit]:
@@ -319,7 +357,7 @@ def cmd_deals(args) -> None:
 
 
 def cmd_search(args) -> None:
-    store = Store(args.db)
+    store = open_store(args.db)
     category = Category(args.category) if args.category else None
     for key in store.search(" ".join(args.text), category, limit=args.limit):
         p = store.product(key)
@@ -329,12 +367,12 @@ def cmd_search(args) -> None:
 
 def cmd_reprocess(args) -> None:
     from .pipeline import reprocess
-    stats = reprocess(Store(args.db))
+    stats = reprocess(open_store(args.db))
     print("rebuilt catalogue from raw records: " + stats.line())
 
 
 def cmd_quality(args) -> None:
-    q = Store(args.db).quality_summary()
+    q = open_store(args.db).quality_summary()
     print(f"raw records kept: {q['raw_records']}")
     print("issues: " + (", ".join(f"{v} {k}" for k, v in q["by_kind"].items()) or "none"))
     for r in q["top"]:
@@ -380,7 +418,7 @@ def cmd_scrapers(args) -> None:
 
 def cmd_export(args) -> None:
     category = Category(args.category) if args.category else None
-    rows = [p.to_dict() for p in Store(args.db).products(category)]
+    rows = [p.to_dict() for p in open_store(args.db).products(category)]
     out = open(args.out, "w", newline="", encoding="utf-8") if args.out else sys.stdout
     if args.format == "json":
         json.dump(rows, out, indent=2, default=str)
@@ -397,7 +435,7 @@ def cmd_export(args) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="devicescout")
-    ap.add_argument("--db", help=f"database file (default: {default_db()})")
+    ap.add_argument("--db", help="SQLite file or postgresql:// URL (default: $DEVICESCOUT_DB, else a file in the data folder)")
     ap.add_argument("--sources", help=f"source registry (default: {sources_path()})")
     ap.add_argument("-v", "--verbose", action="store_true")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -414,7 +452,7 @@ def main(argv: list[str] | None = None) -> None:
     s = sub.add_parser("scrape", help="scrape sources into the database")
     s.add_argument("names", nargs="*")
     s.add_argument("--all", action="store_true", help="every enabled source")
-    s.add_argument("--limit", type=int, default=300, help="max products per source")
+    s.add_argument("--limit", type=int, default=0, help="max products per source (0 = everything)")
     s.add_argument("--delay", type=float, default=2.0, help="seconds between hits to one host")
     s.add_argument("--mode", choices=["static", "dynamic", "stealth"])
     s.add_argument("--ignore-robots", action="store_true")
@@ -466,9 +504,11 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--every", type=_duration, default=_duration("6h"), help="interval, e.g. 30m, 6h, 1d")
     s.add_argument("--jitter", type=_duration, default=_duration("10m"),
                    help="random extra wait so runs don't hit sites at the same minute every day")
-    s.add_argument("--limit", type=int, default=300, help="max products per source per run")
+    s.add_argument("--limit", type=int, default=0, help="max products per source per run (0 = everything)")
     s.add_argument("--delay", type=float, default=2.0, help="seconds between hits to one host")
     s.add_argument("--check-first", action="store_true", help="run a source check before the first scrape")
+    s.add_argument("--start-in", type=_duration, default=0.0,
+                   help="wait this long before the first scheduled run (jobs from the website still run)")
     s.add_argument("--once", action="store_true", help="one run, then exit (for cron)")
     s.set_defaults(func=cmd_schedule, names=[])
 
@@ -486,6 +526,13 @@ def main(argv: list[str] | None = None) -> None:
 
     s = sub.add_parser("reprocess", help="rebuild the catalogue from stored raw records (after parser updates)")
     s.set_defaults(func=cmd_reprocess)
+
+    s = sub.add_parser("raw", help="what the raw layer holds per website (pages fetched, records parsed)")
+    s.set_defaults(func=cmd_raw)
+
+    s = sub.add_parser("import-sqlite", help="copy an older SQLite database into PostgreSQL")
+    s.add_argument("path")
+    s.set_defaults(func=cmd_import_sqlite)
 
     s = sub.add_parser("quality", help="what cleaning rejected or fixed, and where sources disagree")
     s.set_defaults(func=cmd_quality)

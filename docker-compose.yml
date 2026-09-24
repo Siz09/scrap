@@ -1,12 +1,16 @@
-# DeviceScout website + scraper.
+# DeviceScout on your own machine: website + scraper + PostgreSQL.
 #
-#   DEVICESCOUT_ADMIN_KEY=<long random string> docker compose up -d
-#                                               # site on http://localhost:8765, scraper every 6 h
-#   DOMAIN=devicescout.example.com docker compose --profile https up -d   # adds automatic HTTPS
+#   docker compose up -d --build        # site on http://localhost:8765, scraper every 6 h
 #
-# Both services share the `data` volume (SQLite database, sources.json, caches).
-# Edit the source list with:  docker compose exec scraper sh -c 'vi $DEVICESCOUT_HOME/sources.json'
-# or mount your own:          ./sources.json:/data/sources.json
+# Data lives in PostgreSQL (the `db` service, volume `pgdata`), in three layers:
+#   raw.*       every page fetched and every record parsed, one partition per website
+#   clean.*     the merged, cleaned catalogue (products, every price seen, quality log)
+#   category.*  one view per device type with typed columns (category.phone, category.laptop ...)
+# Look at it with any PostgreSQL client (DBeaver, pgAdmin, psql) on localhost:${DB_PORT:-5433},
+# user/database devicescout, password $POSTGRES_PASSWORD (default: devicescout).
+# The `data` volume keeps sources.json and caches.
+#
+# Everything listens on 127.0.0.1 only: reachable from this computer, not from the network.
 
 x-app: &app
   restart: unless-stopped
@@ -15,23 +19,24 @@ x-app: &app
   environment: &env
     TZ: ${TZ:-Asia/Kathmandu}
     DEVICESCOUT_RATES: ${DEVICESCOUT_RATES:-}
-    # Optional. Empty (fine on your own machine): anyone who opens the site can run checks/updates.
-    # Set a long random value before putting the site on the internet; you type it on Data sources.
-    DEVICESCOUT_ADMIN_KEY: ${DEVICESCOUT_ADMIN_KEY:-}
+    DEVICESCOUT_DB: postgresql://devicescout:${POSTGRES_PASSWORD:-devicescout}@db:5432/devicescout
+  depends_on:
+    db:
+      condition: service_healthy
 
 services:
   web:
     <<: *app
-    image: ${DEVICESCOUT_IMAGE:-ghcr.io/siz09/scrap}:${DEVICESCOUT_TAG:-latest}
+    image: devicescout-web
     build:
       context: .
       target: web
     ports:
-      - "${WEB_PORT:-8765}:8765"
+      - "127.0.0.1:${WEB_PORT:-8765}:8765"
 
   scraper:
     <<: *app
-    image: ${DEVICESCOUT_IMAGE:-ghcr.io/siz09/scrap}-scraper:${DEVICESCOUT_TAG:-latest}
+    image: devicescout-scraper
     build:
       context: .
       target: scraper
@@ -40,26 +45,28 @@ services:
       <<: *env
       FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}   # optional, paid: enables the last-resort scraper
     shm_size: 1gb     # Chromium needs more shared memory than Docker's 64 MB default
-    depends_on:
-      - web
 
-  caddy:
-    image: caddy:2
-    profiles: ["https"]
+  db:
+    image: postgres:17
     restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
     environment:
-      DOMAIN: ${DOMAIN:-localhost}   # your site's domain; its DNS must point at this server
+      POSTGRES_DB: devicescout
+      POSTGRES_USER: devicescout
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devicescout}
+      TZ: ${TZ:-Asia/Kathmandu}
+    # pg_stat_statements: query timings; lz4: faster, smaller compression for stored pages
+    command: ["postgres", "-c", "shared_preload_libraries=pg_stat_statements",
+              "-c", "default_toast_compression=lz4"]
     volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      - web
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${DB_PORT:-5433}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U devicescout -d devicescout"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
 volumes:
   data:
-  caddy_data:
-  caddy_config:
+  pgdata:

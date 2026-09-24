@@ -32,7 +32,7 @@ from .sample import build_sample
 from .sources import load_entries
 from .sources.detect import cached_platform
 from .specmeta import meta as spec_meta
-from .storage import Store
+from .storage import Store, open_store
 
 log = logging.getLogger(__name__)
 
@@ -77,7 +77,7 @@ class SourcePatch(BaseModel):
 class JobIn(BaseModel):
     kind: Literal["check", "scrape"]
     names: list[str] = Field(default_factory=list)   # empty = all enabled
-    limit: int = Field(default=300, ge=1, le=5000)
+    limit: int | None = Field(default=None, ge=1)   # None: everything each site has
 
 
 def summary(p: Product) -> dict[str, Any]:
@@ -113,7 +113,7 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
     worker_thread = LocalWorker(db, sources) if jobs_mode == "local" else None
 
     def store() -> Store:
-        return Store(db)
+        return open_store(db)
 
     @app.get("/api/health", include_in_schema=False)
     def health():
@@ -264,14 +264,21 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
         except (OSError, ValueError, KeyError) as e:
             return {"sources": [], "file": str(sources), "scrapers": scrapers_info(),
                     "error": f"{sources} can't be read: {type(e).__name__}: {e}"}
+        s = store()
+        try:
+            raw = {r["source"]: r for r in s.raw_summary()}
+        finally:
+            s.close()
         for e in entries:
             kind = e.get("type", "auto")
+            kept = raw.get(e["name"], {})
             out.append({
                 "name": e["name"], "enabled": e.get("enabled", True), "role": e.get("role"),
                 "region": e.get("region"), "type": kind,
                 "platform": cached_platform(e["name"]) if kind == "auto" else kind,
                 "verified": e.get("verified", False), "notes": e.get("notes"),
                 "url": e.get("base_url") or (f"https://{e['domain']}" if e.get("domain") else None),
+                "raw_pages": kept.get("pages", 0), "raw_records": kept.get("records", 0),
                 **status.get(e["name"], {}),
             })
         return {"sources": out, "file": str(sources), "scrapers": scrapers_info()}

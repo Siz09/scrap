@@ -10,9 +10,9 @@ from devicescout.sample import build_sample
 from devicescout.server import create_app
 
 
-@pytest.fixture
-def client(tmp_path):
-    db = build_sample(tmp_path / "sample.db")
+@pytest.fixture(params=["sqlite", "postgres"])
+def client(request, tmp_path):
+    db = build_sample(request.getfixturevalue("pg_url") if request.param == "postgres" else tmp_path / "sample.db")
     return TestClient(create_app(db, packaged("data/sources.json"), sample=True))
 
 

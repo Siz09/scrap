@@ -154,6 +154,30 @@ class UrllibHTTP(Backend):
             return FetchedPage(e.read() or b"", url, e.code, self.name)
 
 
+_LOAD_MORE = ("button:has-text('Load more'), a:has-text('Load more'), button:has-text('View more'), "
+              "button:has-text('Show more'), button:has-text('See more')")
+
+
+def scroll_to_end(page, rounds: int = 20):
+    """page_action for listing pages: scroll (and press "Load more") until no new products appear,
+    for stores that load their catalogue as you scroll."""
+    last = 0
+    for _ in range(rounds):
+        try:
+            more = page.locator(_LOAD_MORE).first
+            if more.count() and more.is_visible():
+                more.click(timeout=2000)
+        except Exception:
+            pass
+        page.mouse.wheel(0, 30000)
+        page.wait_for_timeout(900)
+        height = page.evaluate("document.body.scrollHeight")
+        if height == last:
+            break
+        last = height
+    return page
+
+
 class ScraplingDynamic(Backend):
     name = "scrapling-dynamic"
     browser = True
@@ -161,9 +185,10 @@ class ScraplingDynamic(Backend):
     def missing(self):
         return _browser_missing("playwright")
 
-    def fetch(self, url, headers):
+    def fetch(self, url, headers, scroll=False):
         from scrapling.fetchers import DynamicFetcher
-        return DynamicFetcher.fetch(url, headless=True, network_idle=True)
+        return DynamicFetcher.fetch(url, headless=True, network_idle=True,
+                                    page_action=scroll_to_end if scroll else None)
 
 
 class ScraplingStealth(Backend):
@@ -174,9 +199,10 @@ class ScraplingStealth(Backend):
         # Scrapling's StealthyFetcher drives patchright, a patched Chromium that hides automation.
         return _browser_missing("patchright")
 
-    def fetch(self, url, headers):
+    def fetch(self, url, headers, scroll=False):
         from scrapling.fetchers import StealthyFetcher
-        return StealthyFetcher.fetch(url, headless=True, network_idle=True)
+        return StealthyFetcher.fetch(url, headless=True, network_idle=True,
+                                     page_action=scroll_to_end if scroll else None)
 
 
 class Crawl4AI(Backend):

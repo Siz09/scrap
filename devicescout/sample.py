@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from .models import Category, Offer, Product
-from .storage import Store
+from .storage import Store, open_store
 
 C = Category
 STORES = [("Sample Store Kathmandu", True), ("Sample Gadget Pasal", False), ("Sample Marketplace", None)]
@@ -96,10 +96,17 @@ SALES = {
 }
 
 
-def build_sample(path: Path) -> Path:
-    if path.exists():
-        path.unlink()
-    store = Store(path)
+def build_sample(path):
+    """Write the sample catalogue to a SQLite file (replaced) or a postgresql:// database (emptied)."""
+    from .pgstore import is_postgres
+    if is_postgres(path):
+        store = open_store(path)
+        store.reset_catalogue()
+    else:
+        path = Path(path)
+        if path.exists():
+            path.unlink()
+        store = Store(path)
     now = datetime.now(timezone.utc)
     for i, (cat, name, brand, price, specs, rating, reviews) in enumerate(DEVICES):
         if name in OS_UPGRADES:
