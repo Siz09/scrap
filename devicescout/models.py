@@ -18,6 +18,14 @@ class Category(str, Enum):
     CASE = "case"
     CABLE = "cable"
     ACCESSORY = "accessory"
+    SPEAKER = "speaker"
+    TV = "tv"
+    MONITOR = "monitor"
+    CAMERA = "camera"
+    CONSOLE = "console"
+    NETWORKING = "networking"
+    STORAGE = "storage"
+    APPLIANCE = "appliance"
     UNKNOWN = "unknown"
 
 

@@ -27,7 +27,12 @@ def data_dir() -> Path:
     return d
 
 
-def default_db() -> Path:
+def default_db() -> str:
+    """DEVICESCOUT_DB (a postgresql:// URL in Docker), else a SQLite file in the data folder."""
+    return os.getenv("DEVICESCOUT_DB") or str(legacy_db())
+
+
+def legacy_db() -> Path:
     return data_dir() / "devicescout.db"
 
 

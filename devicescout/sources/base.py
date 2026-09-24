@@ -42,6 +42,9 @@ class Fetcher:
         self.stats: dict[str, dict[str, int]] = {}
         self.host_delay: dict[str, float] = {}   # slower pacing for sites that rate-limit (e.g. Daraz)
         self._session = None                     # tests may inject a fake robots.txt session
+        # Called with every page fetched successfully: (url, page, scraper name). The scrape
+        # job points it at the raw layer, so every page is kept as it came off the site.
+        self.page_sink = None
 
     @property
     def backends(self) -> list:
@@ -111,9 +114,10 @@ class Fetcher:
         self.stats.setdefault(backend, {"ok": 0, "blocked": 0, "error": 0})[outcome] += 1
 
     def get(self, url: str, headers: dict[str, str] | None = None, mode: str | None = None,
-            want_json: bool = False, fallback: bool | str = True):
+            want_json: bool = False, fallback: bool | str = True, scroll: bool = False):
         """Return a Scrapling Selector-like page (.css(), .urljoin(), .json(), .status, .body).
 
+        scroll: in a browser, scroll to the end / press "Load more" first (listing pages).
         fallback: True = whole chain; "http" = HTTP scrapers only (cheap probes such as platform
         detection, where launching a browser isn't worth it); False = first scraper only."""
         if not self.allowed(url):
@@ -128,7 +132,8 @@ class Fetcher:
         for backend in chain:
             self._throttle(url)
             try:
-                page = backend.fetch(url, headers or {})
+                page = (backend.fetch(url, headers or {}, scroll=True) if scroll and backend.name in _SCROLLERS
+                        else backend.fetch(url, headers or {}))
             except Exception as e:
                 self._count(backend.name, "error")
                 reasons.append(f"{backend.name}: {type(e).__name__}: {str(e)[:80]}")
@@ -153,6 +158,11 @@ class Fetcher:
                 if reasons:
                     log.info("%s: %s got through after %s", host, backend.name, "; ".join(reasons))
                 self._preferred[host] = backend.name
+            if self.page_sink:
+                try:
+                    self.page_sink(url, page, backend.name)
+                except Exception as e:           # never lose a scrape over the archive
+                    log.warning("could not store raw page %s: %s", url, e)
             return page
         raise RuntimeError(f"all scrapers failed for {url}: " + "; ".join(reasons or ["no backend available"]))
 
@@ -168,6 +178,9 @@ class Fetcher:
             extra = ", ".join(f"{s[k]} {k}" for k in ("blocked", "error") if s[k])
             parts.append(f"{name} {s['ok']} ok" + (f" ({extra})" if extra else ""))
         return ", ".join(parts) or "no requests"
+
+
+_SCROLLERS = {"scrapling-dynamic", "scrapling-stealth"}
 
 
 class _UrllibSession:

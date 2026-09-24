@@ -6,55 +6,52 @@ It scrapes Nepali stores for prices, including Daraz, Shopify and WooCommerce sh
 
 ```
 sources.json ─► fetch (Scrapling) ─► adapter (Daraz JSON │ Shopify │ WooCommerce │ JSON-LD │ GSMArena)
-            ─► normalize specs + NPR prices ─► merge by model / barcode (SQLite) ─► flag fake prices
+            ─► normalize specs + NPR prices ─► merge by model / barcode (PostgreSQL) ─► flag fake prices
             ─► advisor: budget + uses + must-haves ─► explained shortlist
 ```
 
 ## Run it (Docker)
 
-The website and the scraper run as two containers sharing one database:
+A personal tool that runs on your own machine. Three containers: the website, the scraper and a PostgreSQL database. Docker builds the images locally.
 
 ```bash
 git clone https://github.com/Siz09/scrap.git && cd scrap
 docker compose up -d --build
 ```
 
-Optional settings go in a `.env` file next to `docker-compose.yml` (see `.env.example`). Docker Compose reads it automatically in any shell (PowerShell, cmd, bash), and git ignores it.
+Then open http://localhost:8765. Everything listens on `127.0.0.1` only, so nothing is reachable from other devices on your network.
 
-This starts:
-- **web** (`ghcr.io/siz09/scrap`): the website at http://localhost:8765. On *Data sources* you can:
+- **web**: the website. On *Data sources* you can:
   - **Check** or **Update** all sources or one at a time. The scraper container runs the job and a live progress bar shows it.
-  - **Add a store** by pasting its link (a category page like `…/mobile-phones` works best).
+  - **Add a store** by pasting its link.
   - Disable or remove sources.
 
-  No key is needed on your own machine. Before putting the site on the internet, set `DEVICESCOUT_ADMIN_KEY` in `.env`. Visitors can then still browse, but only someone with the key can start scraping or change sources.
-- **scraper** (`ghcr.io/siz09/scrap-scraper`): checks every source once, then scrapes all enabled sources every 6 hours (`SCRAPE_EVERY=12h` to change it). It also runs jobs queued from the website within about 5 seconds. Every scraper in the fallback chain is installed and ready:
+  Each source also shows how many pages and records have been stored from it.
+- **scraper**: checks every source once, then scrapes every enabled source completely every 6 hours (`SCRAPE_EVERY=12h` in `.env` to change it). It also runs jobs you start from the website within about 5 seconds. Every scraper in the fallback chain is installed:
   - fast HTTP and plain HTTP,
   - Chromium (`scrapling-dynamic`),
   - stealth Chromium (`scrapling-stealth`, patchright),
   - Crawl4AI.
 
   Firecrawl turns on if you set `FIRECRAWL_API_KEY`; it's a paid hosted service.
+- **db** (`postgres:17`): all the data, in three layers (see [Data layers](#data-layers)). Open it with any PostgreSQL tool (DBeaver, pgAdmin, `psql`) at `localhost:5433`, database and user `devicescout`, password `devicescout` (change it with `POSTGRES_PASSWORD` in `.env` before the first start).
 
-To give it a real domain with HTTPS, point the domain's DNS at your server and run:
+If you ran an earlier version, the scraper copies what the old SQLite database collected into PostgreSQL on its first start.
 
-```bash
-DOMAIN=devicescout.example.com docker compose --profile https up -d
-```
-
-Caddy gets and renews the certificate automatically. You can then close port 8765 to the outside.
+Optional settings go in a `.env` file next to `docker-compose.yml` (see `.env.example`). Docker Compose reads it automatically in any shell (PowerShell, cmd, bash).
 
 Useful commands:
 
 ```bash
 docker compose logs -f scraper                                   # watch scraping
-docker compose exec scraper devicescout scrapers --test https://example.com   # try every scraper
+docker compose exec scraper devicescout raw                      # pages and records kept per website
 docker compose exec scraper devicescout quality                  # what cleaning rejected
-docker compose exec scraper devicescout reprocess                # rebuild after a parser update
-docker compose pull && docker compose up -d                      # update to the latest published images
+docker compose exec scraper devicescout reprocess                # rebuild the catalogue after a parser update
+docker compose exec scraper devicescout scrapers --test https://example.com   # try every scraper
+git pull && docker compose up -d --build                         # update
 ```
 
-Data (the database, `sources.json` and caches) lives in the `data` volume at `/data`. To edit the source list, copy it out and back in:
+To edit the source list directly, copy it out and back in:
 
 ```bash
 docker compose cp scraper:/data/sources.json .
@@ -62,8 +59,6 @@ docker compose cp ./sources.json scraper:/data/sources.json
 ```
 
 If the file has a mistake, the *Data sources* page shows the error and the line number.
-
-The images are published by the `Docker images` workflow on every push to `main` (the `latest` tag) and on `v*` tags. Before anything is published, the workflow builds both images, fetches a real page with every scraper in the scraper image, and starts the whole stack to test the admin key and job queue.
 
 **Try it without scraping anything.** `docker compose run --rm -p 8765:8765 web devicescout serve --host 0.0.0.0 --no-browser --sample` serves a fictional demo catalogue.
 
@@ -103,7 +98,7 @@ Outside Docker, data lives in `~/.local/share/devicescout` (Linux), `~/Library/A
   - *Update prices* scrapes them and shows a live log.
   - Each source shows its last result.
 
-The site is also a PWA (installable web app): over HTTPS, visitors can "Add to Home screen" on Android and iPhone, or "Install app" in Chrome and Edge, to get an app icon.
+The site is also a PWA: in Chrome or Edge, "Install app" gives it its own window and icon.
 
 ## Command line
 
@@ -195,14 +190,37 @@ devicescout scrapers                # which fallback scrapers are ready (and why
 devicescout scrapers --test URL     # fetch a page through each scraper separately
 ```
 
+## Data layers
+
+In Docker the data is kept in PostgreSQL, one schema per layer:
+
+| Schema | What's in it |
+|---|---|
+| `raw` | Everything as it came off each website, kept forever. `raw.pages` holds every page and API response fetched (compressed, one row per version: an unchanged page only updates `last_seen_at`). `raw.records` holds every product record as parsed, before cleaning. Both are **partitioned by website** (`raw.pages_hukut`, `raw.records_gadgetbyte`, ...), so one site can be inspected, re-parsed or dropped on its own |
+| `clean` | The merged, cleaned catalogue: `products` (one row per model, with every source's value for each spec), `offers` (every price ever seen, per seller and variant; `latest_offers` is the current one), `aliases`, `quality_issues`, `search_index` |
+| `category` | One view per device type with typed columns and the current price range in Nepal: `category.phone` (ram_gb, main_camera_mp, has_5g, ...), `category.laptop` (has_dedicated_gpu, battery_wh, ...), `category.tv`, `category.appliance`, ... Always up to date with `clean` |
+| `ops` | The job queue and small shared settings |
+
+```sql
+-- phones under Rs 60,000 with 5G and at least 8 GB RAM, cheapest first
+SELECT name, lowest_price_npr, sellers, ram_gb, main_camera_mp, battery_mah
+FROM category.phone
+WHERE has_5g AND ram_gb >= 8 AND lowest_price_npr < 60000
+ORDER BY lowest_price_npr;
+```
+
+Extensions: `pg_trgm` (typo-tolerant search: "galxy s24" finds the Galaxy S24), `unaccent`, `btree_gin`, and `pg_stat_statements` for query timings. Outside Docker the app uses a single SQLite file instead (no raw page archive); set `DEVICESCOUT_DB=postgresql://...` to use PostgreSQL anywhere.
+
 ## Scraping pipeline
 
 Every record goes through the same four steps (`pipeline.py`):
 
+0. **Crawl.** Whole sites, not just a few categories. With a product sitemap, every product in it. Without one (Hukut), every category, brand, offer and next page is walked, links on product pages are followed too, and listings that load as you scroll are scrolled to the end in the browser. `browse_pages` in `sources.json` caps the listing pages per run (default 400); `crawl_site: true` also walks sites that have a sitemap. Every page fetched is kept in `raw.pages`.
 1. **Raw.** The record is stored exactly as parsed, and duplicates are skipped by content hash. When parsers improve, `reprocess` rebuilds everything without visiting the sites again.
 2. **Clean.** Values that are impossible for the device type are dropped: a 20,000 mAh "phone" battery, a 1 kg phone, a Rs 1,999 "phone" that is really an EMI instalment, a "discount" from 10x the price. Junk names are rejected and HTML entities fixed. Every change is logged in `quality_issues`.
 3. **Refine.** Each source's value for a spec is kept. The value shown comes from the most trusted source, then from agreement between sources. For example, two shops saying ~5,000 mAh beat one saying 4,000, and the disagreement is logged.
-4. **Index.** An SQLite FTS5 full-text index covers each model's names, brand, chipset and every listing title it appeared under.
+4. **Index.** A full-text index (PostgreSQL `tsvector` + trigram, or SQLite FTS5) covers each model's names, brand, chipset and every listing title it appeared under.
+5. **Categorise.** Phones, laptops, tablets, watches, earbuds, power banks, chargers, cases, cables, accessories, speakers, TVs, monitors, cameras, consoles, networking, storage and home appliances, from the product name, the store's breadcrumb, and the category page it was listed on. Anything else is kept as "Other".
 
 Pages are fetched through a **chain of scrapers** (`sources/backends.py`):
 
@@ -252,7 +270,7 @@ To add a store, add `{"name": ..., "type": "auto", "base_url": ...}` and run `de
 | Path | What it does |
 |---|---|
 | `web/` | Vite + React + TypeScript frontend. `npm run dev` proxies `/api` to a running `devicescout serve`; `npm run build` writes to `devicescout/web/dist`. The build is committed, so a pip install from git works without Node |
-| `devicescout/server.py` | FastAPI app: `/api/meta`, `/api/advise`, `/api/ask`, `/api/deals`, `/api/products`, `/api/sources`, `/api/quality`, `/api/health` and `/api/jobs` (disabled in read-only mode), plus the built UI. API docs are at `/api/docs` |
+| `devicescout/server.py` | FastAPI app: `/api/meta`, `/api/advise`, `/api/ask`, `/api/deals`, `/api/products`, `/api/sources`, `/api/quality`, `/api/health` and `/api/jobs`, plus the built UI. API docs are at `/api/docs` |
 | `devicescout/jobs.py` | Check and scrape runs, shared by the CLI and the UI |
 | `devicescout/paths.py` | Per-user data folder; finds files bundled with the package |
 | `devicescout/sample.py` | The fictional demo catalogue behind `serve --sample` |
@@ -263,14 +281,14 @@ To add a store, add `{"name": ..., "type": "auto", "base_url": ...}` and run `de
 | `normalize.py` | Spec text to fixed fields. Also parses Nepali prices ("Rs. 1,49,999", "1.5 lakh") and storage variants ("8/256"), cleans marketplace titles, sorts devices into categories, and works out the OS from the model name |
 | `currency.py` | Converts prices to NPR. The INR rate is fixed by the peg; other rates are approximate, so override them with `DEVICESCOUT_RATES='{"USD": 141.2}'` |
 | `pricing.py` | Detects fake, used or mislisted offers |
-| `storage.py` | SQLite. One row per model, matched by barcode first and then by cleaned name. Price history is kept per seller and variant, and each spec records which source it came from |
+| `pgstore.py` | PostgreSQL: the raw / clean / category layers, per-website partitions, search and the job queue |
+| `storage.py` | SQLite (and the shared catalogue logic). One row per model, matched by barcode first and then by cleaned name. Price history is kept per seller and variant, and each spec records which source it came from |
 | `scoring.py`, `advisor.py` | Use-case weights, percentile scoring, and the explained shortlist |
 | `query.py` | Turns plain-language requests into needs |
 | `deals.py` | Finds deals and checks them against the market price and price history |
 | `pipeline.py`, `clean.py` | The raw → clean → refine → index pipeline, and reprocessing |
 | `sources/backends.py` | The scraper fallback chain and bot-wall detection |
-| `Dockerfile`, `docker-compose.yml`, `deploy/Caddyfile` | The image (website by default, scraper with `devicescout schedule`), the two-service stack, and optional HTTPS |
-| `.github/workflows/` | `ci.yml` runs the tests and checks the committed UI build. `docker.yml` builds the image for amd64 and arm64, smoke-tests it, and publishes it to GHCR |
+| `Dockerfile`, `docker-compose.yml` | The images (website, and scraper with the browsers), and the local web + scraper + PostgreSQL stack |
 
 See [docs/scrapers.md](docs/scrapers.md) for the other scraping tools and when to use them.
 

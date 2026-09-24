@@ -30,7 +30,7 @@ class FakeFetcher:
                 return resp(url) if callable(resp) else resp
         raise RuntimeError(f"HTTP 404 for {url}")
 
-    def get(self, url, headers=None, mode=None, want_json=False, fallback=True):
+    def get(self, url, headers=None, mode=None, want_json=False, fallback=True, scroll=False):
         r = self._match(url)
         return FakePage(r if isinstance(r, str) else json.dumps(r), url)
 
@@ -191,7 +191,7 @@ def test_js_built_category_page_is_rendered_in_a_browser():
     rendered = nav + '<a href="/samsung-galaxy-s25-ultra-12gb-256gb">S25</a><a href="/redmi-note-14-pro-5g">R</a>'
 
     class BrowserFetcher(FakeFetcher):
-        def get(self, url, headers=None, mode=None, want_json=False, fallback=True):
+        def get(self, url, headers=None, mode=None, want_json=False, fallback=True, scroll=False):
             self.calls.append((url, mode))
             return FakePage(f"<html><body>{rendered if mode == 'dynamic' else nav}</body></html>", url)
 
@@ -215,3 +215,68 @@ def test_product_links_read_from_embedded_page_data():
     src = GenericSource(SiteConfig(name="s", base_url="https://shop.com.np", start_urls=["https://shop.com.np/mobile-phones"]))
     assert list(src._browse(f, "https://shop.com.np")) == ["https://shop.com.np/apple-iphone-16-128gb",
                                                             "https://shop.com.np/samsung-galaxy-a56-5g-8gb-256gb"]
+
+
+def test_site_crawl_walks_every_listing_page_and_follows_product_links():
+    """No sitemap: categories from the menu, page 2, and related products on product pages are all found;
+    the listing a product was found on tells its category."""
+    from devicescout.sources import GenericSource, SiteConfig
+
+    def product(name, price, related=""):
+        return (f'<html><head><script type="application/ld+json">{{"@type": "Product", "name": "{name}", '
+                f'"offers": {{"price": "{price}", "priceCurrency": "NPR"}}}}</script></head>'
+                f'<body><h1>{name}</h1>{related}</body></html>')
+
+    menu = '<a href="/mobile-phones">Phones</a><a href="/laptops">Laptops</a><a href="/tv">TV</a><a href="/cart">c</a>'
+    routes = {
+        "shop.com.np/mobile-phones?page=2": f'<html><body>{menu}<a href="/redmi-note-14-pro-5g">R</a></body></html>',
+        "shop.com.np/mobile-phones": f'<html><body>{menu}<a href="/samsung-galaxy-a56-5g?ref=x">A56</a>'
+                                     f'<a href="/mobile-phones?page=2&sort=price">2</a>'
+                                     f'<a href="/mobile-phones?sort=new">sorted</a></body></html>',
+        "shop.com.np/laptops": f'<html><body>{menu}<a href="/hp-15s-i5-16gb-512gb">HP</a></body></html>',
+        "shop.com.np/tv": f'<html><body>{menu}<a href="/mi-43-inch-a-series-2025">TV</a></body></html>',
+        "shop.com.np/samsung-galaxy-a56-5g": product("Samsung Galaxy A56 5G", 54999,
+                                                     '<a href="/samsung-galaxy-a36-5g-8gb">related</a>'),
+        "shop.com.np/samsung-galaxy-a36-5g-8gb": product("Samsung Galaxy A36 5G", 42999),
+        "shop.com.np/redmi-note-14-pro-5g": product("Redmi Note 14 Pro 5G", 39999),
+        "shop.com.np/hp-15s-i5-16gb-512gb": product("HP 15s 16GB 512GB", 89999),
+        "shop.com.np/mi-43-inch-a-series-2025": product("Mi 43 inch A Series 2025", 45999),
+    }
+    home = f"<html><body>{menu}</body></html>"
+
+    class SiteFetcher(FakeFetcher):
+        def _match(self, url):
+            self.calls.append(url)
+            if url.rstrip("/") == "https://shop.com.np":
+                return home
+            for needle in sorted(routes, key=len, reverse=True):      # most specific route first
+                if needle in url and not ("?" in url and "?" not in needle and "page=" in url):
+                    return routes[needle]
+            raise RuntimeError(f"HTTP 404 for {url}")
+
+    f = SiteFetcher({})
+    src = GenericSource(SiteConfig(name="shop", base_url="https://shop.com.np"))
+    got = {p.name: p.category.value for p in src.crawl(f, limit=100)}
+    assert got == {"Samsung Galaxy A56 5G": "phone", "Samsung Galaxy A36 5G": "phone",
+                   "Redmi Note 14 Pro 5G": "phone", "HP 15s 16GB 512GB": "laptop",
+                   "Mi 43 inch A Series 2025": "tv"}
+    assert "https://shop.com.np/mobile-phones?page=2" in f.calls
+    assert not any("sort=" in u for u in f.calls)                 # sort/filter variants aren't re-walked
+    assert f.calls.count("https://shop.com.np/samsung-galaxy-a56-5g") == 1
+
+
+def test_site_crawl_stops_at_listing_budget():
+    from devicescout.sources import GenericSource, SiteConfig
+
+    class Endless(FakeFetcher):
+        def get(self, url, headers=None, mode=None, want_json=False, fallback=True, scroll=False):
+            self.calls.append(url)
+            n = int(url.rsplit("=", 1)[1]) if "page=" in url else 1
+            return FakePage(f'<html><body><a href="/deals?page={n + 1}">next</a>'
+                            f'<a href="/phones">p</a><a href="/about-us">a</a></body></html>', url)
+
+    f = Endless({})
+    src = GenericSource(SiteConfig(name="s", base_url="https://shop.com.np", browse_pages=5))
+    assert list(src.crawl(f, limit=100)) == []
+    listing_fetches = [u for u in f.calls if not u.endswith((".xml", "robots.txt"))]
+    assert len(set(listing_fetches)) <= 5

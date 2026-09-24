@@ -15,7 +15,7 @@
       "region": "np",
       "verified": false,
       "base_url": "https://hukut.com",
-      "notes": "Phones, laptops, watches; EMI. No product sitemap, so products are found from its category pages (JavaScript-built: browser scrapers recommended).",
+      "notes": "Whole store: no product sitemap, so every category, brand, offer and next page is walked (start_urls are just where the walk begins). JavaScript-built pages: rendered in the browser scrapers.",
       "start_urls": [
         "https://hukut.com/mobile-phones",
         "https://hukut.com/laptops"
@@ -201,7 +201,7 @@
       "notes": "Official India prices (NPR is pegged to INR at 1.6) to judge whether a Nepali price is fair. Enable after reviewing Samsung's terms."
     }
   ],
-  "defaults_version": 2,
+  "defaults_version": 3,
   "retired": [
     "daraz-np"
   ]

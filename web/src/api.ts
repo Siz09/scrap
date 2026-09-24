@@ -171,6 +171,8 @@ export interface SourceRow {
   last_scrape_count?: number;
   last_scraped_at?: string;
   last_rejected?: number;
+  raw_pages?: number;
+  raw_records?: number;
 }
 
 export interface ScraperInfo {

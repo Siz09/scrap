@@ -288,6 +288,17 @@ class Store:
         self.db.commit()
         return cur.rowcount > 0
 
+    def record_page(self, source, url, status, scraper, content_type, body) -> None:
+        """Raw pages are kept by the PostgreSQL store only (SQLite is for trying things out)."""
+
+    def raw_summary(self) -> list[dict]:
+        return [dict(r) for r in self.db.execute(
+            "SELECT source, 0 AS pages, COUNT(*) AS records, MAX(fetched_at) AS last_seen "
+            "FROM raw_records GROUP BY source ORDER BY source")]
+
+    def _raw_count(self) -> int:
+        return self.db.execute("SELECT COUNT(*) AS n FROM raw_records").fetchone()["n"]
+
     def raw_records(self):
         for row in self.db.execute("SELECT source, url, payload FROM raw_records ORDER BY id"):
             yield product_from_payload(json.loads(row["payload"]))
@@ -302,7 +313,7 @@ class Store:
         top = [dict(r) for r in self.db.execute(
             """SELECT source, kind, field, COUNT(*) AS n, MAX(detail) AS example FROM quality_issues
                GROUP BY source, kind, field ORDER BY n DESC LIMIT 25""")]
-        raw = self.db.execute("SELECT COUNT(*) AS n FROM raw_records").fetchone()["n"]
+        raw = self._raw_count()
         return {"raw_records": raw, "by_kind": by_kind, "top": top}
 
     def _reindex(self, key, name, brand, category, specs) -> None:
@@ -414,14 +425,20 @@ class Store:
             "SELECT category, COUNT(*) AS n FROM products GROUP BY category")}
         offers = self.db.execute("SELECT COUNT(*) AS n, MAX(scraped_at) AS last FROM offers").fetchone()
         sources = [r["source"] for r in self.db.execute("SELECT DISTINCT source FROM offers ORDER BY source")]
-        raw = self.db.execute("SELECT COUNT(*) AS n FROM raw_records").fetchone()["n"]
+        raw = self._raw_count()
         issues = self.db.execute("SELECT COUNT(*) AS n FROM quality_issues").fetchone()["n"]
         return {"products": sum(by_cat.values()), "by_category": by_cat, "offers": offers["n"],
                 "last_scraped": offers["last"], "sources": sources, "raw_records": raw, "quality_issues": issues}
 
-    def price_history(self, key: str) -> list[sqlite3.Row]:
+    def price_history(self, key: str) -> list:
         return self.db.execute(
             """SELECT source, url, variant, region, price, currency, scraped_at FROM offers
                WHERE product_key = ? ORDER BY scraped_at""",
             (key,),
         ).fetchall()
+
+
+def open_store(db) -> Store:
+    """SQLite file path -> Store; postgresql://... URL -> PgStore (the Docker deployment)."""
+    from .pgstore import PgStore, is_postgres
+    return PgStore(str(db)) if is_postgres(db) else Store(db)

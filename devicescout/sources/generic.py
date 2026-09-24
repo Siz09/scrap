@@ -21,7 +21,8 @@ from urllib.parse import urljoin, urlparse
 
 from ..models import Offer, Product
 from ..normalize import finalize, parse_label_lines, parse_price, parse_variant
-from .base import Fetcher, Source, text_of
+from .backends import NotFound
+from .base import Fetcher, Source, _looks_like_js_shell, text_of
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +51,10 @@ class SiteConfig:
     spec_label_css: str = "th, dt, .label"
     spec_value_css: str = "td, dd, .value"
     breadcrumb_css: str = "nav[aria-label*='readcrumb'] a, .breadcrumb a"
+    # Whole-site crawl (sites without a product sitemap, or crawl_site=True): how many listing
+    # pages (categories, brands, offers, page 2, 3 ...) to walk per run.
+    browse_pages: int = 400
+    crawl_site: bool = False        # walk the site's pages even when it has a product sitemap
 
 
 def _walk_jsonld(obj) -> Iterator[dict]:
@@ -263,6 +268,7 @@ class GenericSource(Source):
         self.cfg = cfg
         self.name = cfg.name
         self.fetch_mode = cfg.fetch_mode
+        self._hints: dict[str, str] = {}   # product url -> words of the listing it was found on
 
     def _wanted(self, url: str) -> bool:
         if self.cfg.url_exclude and re.search(self.cfg.url_exclude, url, re.I):
@@ -272,16 +278,15 @@ class GenericSource(Source):
         return not self.cfg.keywords or any(k.lower() in url.lower() for k in self.cfg.keywords)
 
     def discover(self, fetcher: Fetcher, **_) -> Iterator[str]:
+        """Product URLs from the sitemap, or (no sitemap) from walking the site's listing pages."""
         seen: set[str] = set()
         if not self.cfg.product_link_css:
-            base = self.cfg.base_url or (self.cfg.start_urls[0] if self.cfg.start_urls else "")
-            for u in sitemap_urls(fetcher, base):
+            for u in sitemap_urls(fetcher, self._base()):
                 if u not in seen and self._wanted(u):
                     seen.add(u)
                     yield u
             if not seen:
-                # No usable sitemap: browse category pages and collect product-looking links.
-                yield from self._browse(fetcher, base)
+                yield from self._browse(fetcher, self._base())
             return
         for url in self.cfg.start_urls:
             for _ in range(self.cfg.max_pages):
@@ -295,6 +300,114 @@ class GenericSource(Source):
                 if not nxt:
                     break
                 url = page.urljoin(nxt)
+
+    def _base(self) -> str:
+        return self.cfg.base_url or (self.cfg.start_urls[0] if self.cfg.start_urls else "")
+
+    def crawl(self, fetcher: Fetcher, limit: int = 20, **opts) -> Iterator[Product]:
+        """Everything the site lists: products from the sitemap, then (no sitemap, or crawl_site)
+        a walk over every category / brand / offer / next-page listing, following links found on
+        product pages too (related products, breadcrumbs)."""
+        if self.cfg.product_link_css:
+            yield from super().crawl(fetcher, limit, **opts)
+            return
+        done: set[str] = set()
+        n = 0
+        for url in sitemap_urls(fetcher, self._base()):
+            if n >= limit:
+                return
+            if url in done or not self._wanted(url):
+                continue
+            done.add(url)
+            product = self._product(fetcher, url)
+            if product:
+                n += 1
+                yield product
+        if done and not self.cfg.crawl_site:
+            return
+        for product in self._site_crawl(fetcher, limit - n, skip=done):
+            yield product
+
+    def _product(self, fetcher: Fetcher, url: str, page=None) -> Product | None:
+        try:
+            page = page or fetcher.get(url, mode=self.fetch_mode)
+            product = self.parse(page)
+            if product is None and self.fetch_mode != "dynamic" and _looks_like_js_shell(page):
+                product = self.parse(fetcher.get(url, mode="dynamic"))
+            return product
+        except NotFound:
+            return None
+        except Exception as e:
+            log.warning("[%s] failed %s: %s", self.name, url, e)
+            return None
+
+    _PAGE_PARAMS = {"page", "p", "pg", "paged", "pagenumber", "page_no", "pageno", "offset", "start"}
+
+    def _canonical(self, url: str, product: bool) -> str:
+        """One URL per page: products lose their query string; listings keep only pagination
+        (?page=2), not sort/filter variants that would multiply the same listing endlessly."""
+        u = urlparse(url.split("#")[0])
+        if product:
+            query = ""
+        else:
+            keep = [kv for kv in u.query.split("&") if kv and kv.split("=")[0].lower() in self._PAGE_PARAMS]
+            query = "&".join(sorted(keep))
+        path = u.path.rstrip("/") or "/"
+        return f"{u.scheme}://{u.netloc}{path}" + (f"?{query}" if query else "")
+
+    def _site_crawl(self, fetcher: Fetcher, limit: int, skip: set[str] = frozenset()) -> Iterator[Product]:
+        from collections import deque
+        host = urlparse(self._base()).netloc
+        listings = deque(dict.fromkeys(self._canonical(u, False)
+                                       for u in [*self.cfg.start_urls, self._base()] if u))
+        products: deque[str] = deque()
+        queued = set(listings) | set(skip)
+        walked = n = 0
+        while (products or listings) and n < limit:
+            if products:
+                url, is_product = products.popleft(), True
+            else:
+                if walked >= self.cfg.browse_pages:
+                    log.info("[%s] stopped after %d listing pages (browse_pages)", self.name, walked)
+                    break
+                url, is_product = listings.popleft(), False
+            try:
+                if is_product:
+                    page = fetcher.get(url, mode=self.fetch_mode)
+                else:
+                    page = self._page(fetcher, url)
+                    walked += 1
+            except NotFound:
+                continue
+            except Exception as e:
+                log.info("[%s] %s: %s", self.name, url, e)
+                continue
+            if is_product:
+                product = self._product(fetcher, url, page)
+                if product:
+                    n += 1
+                    yield product
+            # Every page, product pages included, can lead to more of the site.
+            listing_path = urlparse(url).path
+            for link in self._links(page, host) + self._embedded_links(page, host):
+                if self._looks_like_product(link):
+                    link = self._canonical(link, True)
+                    if link not in queued:
+                        queued.add(link)
+                        products.append(link)
+                        if not is_product:
+                            self._hints[link] = listing_path.replace("-", " ").replace("/", " ")
+                else:
+                    link = self._canonical(link, False)
+                    if link not in queued:
+                        queued.add(link)
+                        # Pagination and category pages first, so products start flowing early.
+                        if re.search(r"[?&](page|p|pg|paged)=|/page/\d", link) or self._CATEGORY.search(link):
+                            listings.appendleft(link)
+                        else:
+                            listings.append(link)
+        log.info("[%s] site crawl: %d listing pages walked, %d product pages queued, %d products",
+                 self.name, walked, len([u for u in queued if self._looks_like_product(u)]), n)
 
     _CATEGORY = re.compile(r"mobile|phone|smartphone|laptop|notebook|tablet|ipad|watch|wearable|power-?bank|"
                            r"earbud|headphone|audio|charger|accessor|gadget|electronic", re.I)
@@ -351,6 +464,8 @@ class GenericSource(Source):
         """Fetch a listing page. If it has no product links (a JavaScript-built page whose product
         cards appear only after scripts run), render it in a browser."""
         host = urlparse(url).netloc
+        if self.fetch_mode == "dynamic":     # already known: this site draws its listings in the browser
+            return fetcher.get(url, mode="dynamic", scroll=True)
         page = fetcher.get(url)
         links = self._links(page, host) + self._embedded_links(page, host)
         products = [u for u in links if self._looks_like_product(u)]
@@ -358,7 +473,7 @@ class GenericSource(Source):
                  f" (e.g. {products[0]})" if products else "")
         if not products:
             try:
-                rendered = fetcher.get(url, mode="dynamic")
+                rendered = fetcher.get(url, mode="dynamic", scroll=True)
             except Exception as e:
                 log.info("[%s] browser render failed for %s: %s", self.name, url, e)
                 return page
@@ -509,7 +624,8 @@ class GenericSource(Source):
             image=image if isinstance(image, str) else None,
             gtin=next((str(ld[k]) for k in ("gtin13", "gtin", "gtin12", "gtin14", "gtin8") if ld.get(k)), None),
         )
-        return finalize(product, category_hint=f"{self.cfg.category_hint or ''} {breadcrumb}")
+        hint = self._hints.get(self._canonical(page.url, True), "")
+        return finalize(product, category_hint=f"{self.cfg.category_hint or ''} {breadcrumb} {hint}")
 
 
 def load_site_configs(path: str) -> dict[str, SiteConfig]:
