@@ -210,7 +210,44 @@ def extract_spec_rows(page, cfg: SiteConfig) -> dict[str, str]:
                 label, value = text_of(dt), text_of(dd)
                 if label and value and len(label) < 60:
                     raw.setdefault(label.rstrip(":"), value)
-    return raw
+        for label, value in _div_spec_rows(page):
+            raw.setdefault(label, value)
+    # Variant price rows ("12/256GB | Rs. 98,499") are prices, not specifications.
+    return {k: v for k, v in raw.items() if not _PRICE_ONLY.fullmatch(v.strip())}
+
+
+_PRICE_ONLY = re.compile(r"(?:Rs\.?|NPR|रु|\$|USD|₹)\s?[\d,]+(?:\.\d+)?(?:\s*/-)?", re.I)
+
+
+def _script_heavy(page) -> bool:
+    """A big page that is nearly all script (hukut product page: 135 KB of HTML, 809 characters
+    of text): whatever is missing from it is most likely drawn by JavaScript."""
+    body = getattr(page, "body", b"") or b""
+    try:
+        text = len(" ".join(page.css("body").first.get_all_text().split())) if page.css("body") else 0
+    except Exception:
+        return False
+    return len(body) > 30_000 and len(body) > 50 * max(text, 1)
+
+
+def _div_spec_rows(page) -> list[tuple[str, str]]:
+    """Spec sheets built from <div>s/<span>s instead of a table, inside a block whose class or id
+    says 'spec' (hukut and most Next.js stores): each row is an element with exactly two parts,
+    a short label and its value, e.g. <div><span>Battery</span><span>5000 mAh</span></div>."""
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for box in page.css("[class*=spec], [id*=spec], [class*=Spec], [id*=Spec]"):
+        for row in [box, *box.css("*")]:
+            kids = [c for c in row.children if c.tag not in ("script", "style", "svg", "button")]
+            if len(kids) != 2 or any(len(k.css("*")) > 4 for k in kids):
+                continue                       # not a label/value pair, or a whole group
+            label, value = text_of(kids[0]).rstrip(":").strip(), text_of(kids[1])
+            if (not label or not value or label == value or len(label) > 40 or len(value) > 300
+                    or not re.search(r"[A-Za-z]", label) or label.lower() in seen):
+                continue
+            seen.add(label.lower())
+            out.append((label, value))
+    return out
 
 
 _NPR_TEXT = re.compile(r"(?:price[^.\n]{0,40}?)?(?:rs\.?|npr|nrs\.?|रु\.?)\s*([\d,]{4,}(?:\.\d+)?)", re.I)
@@ -357,10 +394,14 @@ class GenericSource(Source):
             if self._is_listing(page):
                 return None
             product = self.parse(page)
-            if product is None and self.fetch_mode != "dynamic" and _looks_like_js_shell(page):
+            # A script-built page may carry its price in plain HTML (JSON-LD) but draw the spec
+            # sheet only in the browser (hukut): render it when the plain page had few specs.
+            thin = product is None or (len(product.raw_specs) < 5 and _script_heavy(page))
+            if thin and self.fetch_mode != "dynamic" and _looks_like_js_shell(page):
                 rendered = fetcher.get(url, mode="dynamic")
-                product = None if self._is_listing(rendered) else self.parse(rendered)
-                if product:
+                better = None if self._is_listing(rendered) else self.parse(rendered)
+                if better and (product is None or len(better.raw_specs) > len(product.raw_specs)):
+                    product = better
                     self._browser_wins += 1
                     if self._browser_wins >= 2:     # this site's product pages need the browser
                         log.info("[%s] product pages need a browser; rendering them from now on", self.name)

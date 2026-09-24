@@ -55,3 +55,43 @@ def test_user_source_list_gets_new_defaults_but_keeps_edits(tmp_path, monkeypatc
     assert hukut["enabled"] is False                         # user's choice kept
     assert hukut["start_urls"] == ["https://hukut.com/mobile-phones", "https://hukut.com/laptops"]
     assert paths.merge_default_sources(tmp_path / "sources.json") is False     # only once
+
+
+def test_div_spec_sheet_is_read_and_variant_prices_are_not_specs():
+    html = """<html><body><h1>OnePlus 15R</h1>
+    <script type="application/ld+json">{"@type":"Product","name":"OnePlus 15R",
+      "offers":{"@type":"Offer","price":"98499","priceCurrency":"NPR"}}</script>
+    <table><tr><th>12/256GB</th><td>Rs. 98,499</td></tr></table>
+    <div class="product-specs"><h3>Display</h3>
+      <div class="row"><span>Screen Size</span><span>6.83 inches</span></div>
+      <div class="row"><span>Refresh Rate</span><span>165Hz</span></div>
+      <h3>Battery</h3>
+      <div class="row"><p>Battery</p><p>7400 mAh</p></div>
+      <div class="row"><p>Charging:</p><p>80W SUPERVOOC</p></div>
+    </div></body></html>"""
+    p = GenericSource(SiteConfig(name="s", region="np")).parse(Selector(html, url="https://s/oneplus-15r"))
+    assert p.raw_specs["Screen Size"] == "6.83 inches"
+    assert p.raw_specs["Charging"] == "80W SUPERVOOC"
+    assert "12/256GB" not in p.raw_specs
+    assert p.specs["battery_mah"] == 7400
+
+
+def test_price_in_plain_html_but_specs_only_in_browser_renders_the_page():
+    shell = ('<html><body><h1>X Phone</h1><script type="application/ld+json">{"@type":"Product",'
+             '"name":"X Phone","offers":{"price":"50000","priceCurrency":"NPR"}}</script>'
+             '<script>' + "x" * 60000 + '</script></body></html>')
+    full = shell.replace("</h1>", '</h1><div class="specs">' + "".join(
+        f'<div><span>Spec {i}</span><span>value {i}</span></div>' for i in range(8)) + "</div>")
+
+    class F:
+        modes: list = []
+
+        def get(self, url, mode="static", **kw):
+            self.modes.append(mode)
+            return Selector(full if mode == "dynamic" else shell, url=url)
+
+    src, f = GenericSource(SiteConfig(name="s", region="np")), F()
+    p = src._product(f, "https://s/x-phone")
+    assert len(p.raw_specs) == 8 and f.modes == ["static", "dynamic"]
+    src._product(f, "https://s/y-phone")
+    assert src.fetch_mode == "dynamic"      # two wins: the rest go straight to the browser

@@ -448,6 +448,8 @@ def cmd_inspect(args) -> None:
 
 def _inspect_specs(src, page, blobs) -> None:
     """What the product parser gets from this page, and where else specs might be hiding."""
+    from .sources.base import text_of
+
     try:
         p = src.parse(page)
     except Exception as e:
@@ -484,6 +486,17 @@ def _inspect_specs(src, page, blobs) -> None:
         walk(blob)
     if keys:
         print(f"spec-like keys in page data: {sorted(keys)[:15]}")
+    # The spec block's markup, so a sheet the parser still misses can be taught to it.
+    boxes = [b for b in page.css("[class*=spec], [id*=spec]") if len(text_of(b)) > 40]
+    if boxes:
+        box = min(boxes, key=lambda b: len(b.html_content))   # the tightest block with real text
+        print("spec block markup (start):")
+        print("  " + " ".join(box.html_content.split())[:900])
+    body = page.body if isinstance(page.body, str) else bytes(page.body).decode("utf-8", "replace")
+    if "self.__next_f" in body:
+        i = body.lower().find("battery")
+        print("Next.js page data in scripts: yes"
+              + (f"; around 'battery': {' '.join(body[max(0, i - 200):i + 200].split())!r}" if i >= 0 else ""))
 
 
 def cmd_scrapers(args) -> None:
