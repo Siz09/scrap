@@ -82,6 +82,18 @@ class JobIn(BaseModel):
     limit: int | None = Field(default=None, ge=1)   # None: everything each site has
 
 
+def _health(st: dict) -> dict:
+    """A source's status from whichever is newer: its last check, or its last full update
+    (the scraper no longer checks everything first, so an update is usually the evidence)."""
+    scraped, checked = st.get("last_scraped_at"), st.get("checked_at")
+    if scraped and st.get("check") != "RUNNING" and (not checked or scraped > checked):
+        n = st.get("last_scrape_count") or 0
+        return {**st, "check": "OK" if n else "FAIL", "checked_at": scraped,
+                "check_detail": f"last update saved {n} items" if n else
+                                "last update saved nothing: press Check for details"}
+    return st
+
+
 def summary(p: Product) -> dict[str, Any]:
     best = p.best_offer
     return {
@@ -322,7 +334,7 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
                 "verified": e.get("verified", False), "notes": e.get("notes"),
                 "url": e.get("base_url") or (f"https://{e['domain']}" if e.get("domain") else None),
                 "raw_pages": kept.get("pages", 0), "raw_records": kept.get("records", 0),
-                **status.get(e["name"], {}),
+                **_health(status.get(e["name"], {})),
             })
         return {"sources": out, "file": str(sources), "scrapers": scrapers_info()}
 

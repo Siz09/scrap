@@ -80,3 +80,26 @@ def test_reprocess_rebuilds_from_raw(tmp_path):
     [again] = s.products()
     assert again.specs["battery_mah"] == 5000 and again.specs["os_upgrades"] == 7
     assert s.search("s24") == [again.key]
+
+
+def test_variant_specs_are_not_logged_as_conflicts(tmp_path):
+    """gsmarena=8 GB vs gadgetbyte=6 GB RAM is two variants of one phone, not an error;
+    a 4.1" vs 6.9" screen still is worth a look."""
+    s = Store(tmp_path / "x.db")
+    s.upsert(phone(source="gsmarena", specs={"ram_gb": 8, "storage_gb": 256, "display_size_in": 4.1}))
+    s.upsert(phone(source="gadgetbyte", specs={"ram_gb": 6, "storage_gb": 128, "display_size_in": 6.9}))
+    fields = {r["field"] for r in s.quality_summary()["top"] if r["kind"] == "conflict"}
+    assert fields == {"display_size_in"}
+
+
+def test_source_status_comes_from_the_newer_of_check_and_update():
+    from devicescout.server import _health
+    fresh = _health({"last_scraped_at": "2026-09-24T12:00:00+00:00", "last_scrape_count": 167})
+    assert fresh["check"] == "OK" and "167 items" in fresh["check_detail"]
+    empty = _health({"last_scraped_at": "2026-09-24T12:00:00+00:00", "last_scrape_count": 0,
+                     "check": "OK", "checked_at": "2026-09-23T12:00:00+00:00"})
+    assert empty["check"] == "FAIL"                        # a newer empty update beats an old passing check
+    later_check = {"last_scraped_at": "2026-09-23T12:00:00+00:00", "last_scrape_count": 0,
+                   "check": "OK", "checked_at": "2026-09-24T12:00:00+00:00", "check_detail": "3 products"}
+    assert _health(later_check) == later_check
+    assert _health({"check": "RUNNING", "last_scraped_at": "x"})["check"] == "RUNNING"

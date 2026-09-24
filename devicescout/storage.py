@@ -25,6 +25,7 @@ from .normalize import canonical_key, clean_title
 from .pricing import flag_suspicious
 
 SOURCE_PRIORITY = {"gsmarena": 10}  # everything else defaults to 0
+VARIANT_SPECS = {"ram_gb", "storage_gb"}  # differ between variants of one model: never a "conflict"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS products (
@@ -194,7 +195,8 @@ class Store:
         specs, spec_sources = {}, {}
         for k, cands in candidates.items():
             specs[k], spec_sources[k], conflicting = resolve_spec(cands)
-            if conflicting and p.source in cands and len(cands) > 1:
+            # RAM/storage differ between variants of one model (8/256 vs 6/128): not a disagreement.
+            if conflicting and p.source in cands and len(cands) > 1 and k not in VARIANT_SPECS:
                 self.log_issue(p.source, p.url, "conflict", k,
                                "sources disagree: " + ", ".join(f"{s}={v}" for s, v in cands.items()))
         if row is None:
