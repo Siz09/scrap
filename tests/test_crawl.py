@@ -202,7 +202,8 @@ def test_js_built_category_page_is_rendered_in_a_browser():
     urls = list(src._browse(f, "https://shop.com.np"))
     assert urls == ["https://shop.com.np/samsung-galaxy-s25-ultra-12gb-256gb", "https://shop.com.np/redmi-note-14-pro-5g"]
     assert ("https://shop.com.np/mobile-phones", "dynamic") in f.calls
-    assert src.fetch_mode == "dynamic"       # its product pages will be rendered too
+    assert src.listing_mode == "dynamic"     # later listings go straight to the browser
+    assert src.fetch_mode == "static"        # product pages are still tried plain first (hukut: much faster)
 
 
 def test_product_links_read_from_embedded_page_data():
@@ -302,3 +303,40 @@ def test_quick_sources_scrape_first_and_recent_checks_are_not_repeated():
     for e in entries:
         _save_status(e["name"], checked_at=_now())
     assert recently_checked(entries)
+
+
+def test_product_group_variants_become_separate_prices():
+    """hukut.com product pages: schema.org ProductGroup with one Product per storage option."""
+    from devicescout.sources import GenericSource, SiteConfig
+
+    ld = {"@context": "https://schema.org", "@type": "ProductGroup", "name": "Samsung Galaxy A57",
+          "brand": {"@type": "Brand", "name": "Samsung"},
+          "hasVariant": [
+              {"@type": "Product", "name": "Samsung Galaxy A57 8GB/128GB",
+               "offers": {"@type": "Offer", "price": 54999, "priceCurrency": "NPR",
+                          "availability": "https://schema.org/InStock"}},
+              {"@type": "Product", "name": "Samsung Galaxy A57 8GB/256GB",
+               "offers": {"@type": "Offer", "price": 59999, "priceCurrency": "NPR",
+                          "availability": "https://schema.org/OutOfStock"}}]}
+    html = (f'<html><head><script type="application/ld+json">{json.dumps(ld)}</script></head>'
+            f'<body><h1>Samsung Galaxy A57</h1><p>Rs. 4,500 off</p></body></html>')
+    p = GenericSource(SiteConfig(name="hukut", base_url="https://hukut.com")).parse(
+        FakePage(html, "https://hukut.com/samsung-galaxy-a57"))
+    assert p.name == "Samsung Galaxy A57" and p.brand == "Samsung" and p.category.value == "phone"
+    assert [(o.variant, o.price, o.in_stock) for o in p.offers] == [("8/128", 54999, True), ("8/256", 59999, False)]
+
+
+def test_js_shell_and_non_product_pages_are_recognised():
+    from devicescout.sources import GenericSource, SiteConfig
+    from devicescout.sources.base import _looks_like_js_shell
+
+    menu = "Laptops Desktops Gaming Monitors " * 18                       # ~570 characters of menu text
+    itti_like = FakePage(f"<html><body>{menu}<script>{'x' * 60000}</script></body></html>", "https://itti.com.np/")
+    assert _looks_like_js_shell(itti_like)
+    article = FakePage(f"<html><body>{'A real article paragraph. ' * 120}</body></html>", "https://x.com/a")
+    assert not _looks_like_js_shell(article)
+
+    src = GenericSource(SiteConfig(name="itti", base_url="https://itti.com.np"))
+    assert src._looks_like_product("https://itti.com.np/product/asus-zenbook-14-um3406ga-price-nepal")
+    assert not src._looks_like_product("https://itti.com.np/about-itti-pvt-ltd")
+    assert not src._looks_like_product("https://itti.com.np/itti-terms-and-conditions")

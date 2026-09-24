@@ -267,7 +267,10 @@ class GenericSource(Source):
     def __init__(self, cfg: SiteConfig):
         self.cfg = cfg
         self.name = cfg.name
-        self.fetch_mode = cfg.fetch_mode
+        self.fetch_mode = cfg.fetch_mode      # product pages
+        self.listing_mode = cfg.fetch_mode    # category / listing pages (often JS-built even when
+                                              # product pages carry their data in plain HTML: hukut)
+        self._browser_wins = 0
         self._hints: dict[str, str] = {}   # product url -> words of the listing it was found on
 
     def _wanted(self, url: str) -> bool:
@@ -334,6 +337,11 @@ class GenericSource(Source):
             product = self.parse(page)
             if product is None and self.fetch_mode != "dynamic" and _looks_like_js_shell(page):
                 product = self.parse(fetcher.get(url, mode="dynamic"))
+                if product:
+                    self._browser_wins += 1
+                    if self._browser_wins >= 2:     # this site's product pages need the browser
+                        log.info("[%s] product pages need a browser; rendering them from now on", self.name)
+                        self.fetch_mode = "dynamic"
             return product
         except NotFound:
             return None
@@ -423,9 +431,16 @@ class GenericSource(Source):
                 out.append(full)
         return list(dict.fromkeys(out))
 
+    _NOT_PRODUCT = {"about", "terms", "conditions", "condition", "privacy", "policy", "policies", "career",
+                    "careers", "contact", "faq", "faqs", "warranty", "returns", "refund", "shipping",
+                    "delivery", "locations", "branches", "login", "register", "account", "blog", "news"}
+
     def _looks_like_product(self, url: str) -> bool:
         # Product pages have a long, specific slug: /samsung-galaxy-a56-5g-8gb-256gb
         slug = urlparse(url).path.strip("/").split("/")[-1]
+        words = set(re.split(r"[-_]+", slug.lower()))
+        if words & self._NOT_PRODUCT:       # /about-itti-pvt-ltd, /itti-terms-and-conditions
+            return False
         looks_like_model = bool(re.search(r"\d", slug)) or len(slug.split("-")) >= 4
         return (len(slug) >= 10 and looks_like_model
                 and not (self.cfg.url_exclude and re.search(self.cfg.url_exclude, url, re.I)))
@@ -464,7 +479,7 @@ class GenericSource(Source):
         """Fetch a listing page. If it has no product links (a JavaScript-built page whose product
         cards appear only after scripts run), render it in a browser."""
         host = urlparse(url).netloc
-        if self.fetch_mode == "dynamic":     # already known: this site draws its listings in the browser
+        if self.listing_mode == "dynamic":   # already known: this site draws its listings in the browser
             return fetcher.get(url, mode="dynamic", scroll=True)
         page = fetcher.get(url)
         links = self._links(page, host) + self._embedded_links(page, host)
@@ -482,7 +497,7 @@ class GenericSource(Source):
             log.info("[%s] %s in a browser: %d links, %d look like products%s", self.name, url, len(rlinks),
                      len(rproducts), f" (e.g. {rproducts[0]})" if rproducts else "")
             if rproducts or len(rlinks) > len(links):
-                self.fetch_mode = "dynamic"      # product pages on this site probably need it too
+                self.listing_mode = "dynamic"    # product pages are tried plain first (much faster)
                 return rendered
         return page
 
@@ -509,6 +524,33 @@ class GenericSource(Source):
                 if u not in found and u not in visited and u not in queue and self._looks_like_product(u):
                     found.add(u)
                     yield u
+
+    def _variant_offers(self, ld: dict, name: str, url: str, currency: str | None) -> list[Offer]:
+        """schema.org ProductGroup: each hasVariant is a Product with its own price (8/128, 8/256 ...)."""
+        if not _is_type(ld, "ProductGroup"):
+            return []
+        variants = ld.get("hasVariant") or []
+        if isinstance(variants, dict):
+            variants = [variants]
+        out, now = [], datetime.now(timezone.utc).isoformat(timespec="seconds")
+        for v in variants:
+            if not isinstance(v, dict):
+                continue
+            vo = v.get("offers") or {}
+            if isinstance(vo, list):
+                vo = vo[0] if vo else {}
+            price = parse_price(vo.get("price") or vo.get("lowPrice")) if isinstance(vo, dict) else None
+            if price is None:
+                continue
+            vname = str(v.get("name") or name)
+            availability = str(vo.get("availability", ""))
+            out.append(Offer(
+                source=self.name, url=url, price=price, currency=vo.get("priceCurrency") or currency,
+                in_stock=None if not availability else "InStock" in availability, scraped_at=now,
+                region=self.cfg.region, seller=self.name, official=self.cfg.official,
+                variant=parse_variant(vname) or (vname if vname != name else None),
+            ))
+        return out
 
     def parse(self, page) -> Product | None:
         ld = extract_jsonld_product(page) or {}
@@ -609,6 +651,9 @@ class GenericSource(Source):
                 original_price=(original or embedded_original)
                 if (original or embedded_original) and price and (original or embedded_original) > price else None,
             ))
+        variant_offers = self._variant_offers(ld, name, page.url, currency)
+        if variant_offers:
+            offers = variant_offers      # one price per storage/colour option (ProductGroup)
         if not ld and not offers and not specs and len(raw) < 3:
             return None   # a category, article or landing page, not a product
         product = Product(

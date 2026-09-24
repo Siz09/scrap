@@ -236,12 +236,16 @@ class Source:
 
 
 def _looks_like_js_shell(page) -> bool:
-    """A page that is mostly script with little text: content is rendered by JavaScript."""
+    """A page that is mostly script with little text: content is rendered by JavaScript.
+    Either almost no text, or a big HTML file whose visible text is a sliver of it (itti.com.np:
+    644 KB of HTML, 569 characters of text; hukut: 163 KB, 816)."""
     try:
         text = page.css("body").first.get_all_text() if page.css("body") else ""
     except Exception:
         return False
-    return len(" ".join(text.split())) < 400
+    visible = len(" ".join(text.split()))
+    body = getattr(page, "body", b"") or b""
+    return visible < 400 or (visible < 3000 and len(body) > 50 * max(visible, 1))
 
 
 def response_json(page):
