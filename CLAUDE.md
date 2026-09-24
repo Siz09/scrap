@@ -92,7 +92,13 @@ cd web && npm run build                     # typecheck + build into devicescout
   - Family names imply the brand when it's missing (Galaxy → samsung, iPhone → apple).
 - Other categories keep their numbers (power banks), and laptop configs aren't merged.
 - **`devicescout duplicates`** lists cards that probably still are one device (`likely_same`), for tuning.
-- After changing rules, run `devicescout reprocess` (rebuilds cards from raw records; no scraping needed).
+- After changing matching/cleaning rules: `devicescout reprocess` (re-cleans the stored records).
+- After changing a **page parser**: `devicescout reparse [site ...] [--dry-run] [--force]` (`reparse.py`, PostgreSQL only).
+  It re-reads every saved page in `raw.pages` with today's parser (listing pages first, for category hints),
+  replaces that site's `raw.records` (prices keep the page's fetch time), then runs `reprocess`.
+  A site whose new reading has under 50% of its old records keeps them unless `--force`. Sites without
+  saved pages are left alone. Pages only hold what was fetched: Hukut pages fetched before the browser
+  change have no spec sheet, so Hukut still needs one re-scrape for specs.
 
 **Jobs** (`jobs.py`, `cli.py cmd_schedule`)
 - **One job at a time, one website at a time** (owner's request). The scheduled run and the Check/Update
@@ -160,8 +166,8 @@ og:image from the product's page, then to an SVG placeholder.
      SELECT count(*), count(*) FILTER (WHERE n>0), round(avg(n),1) FROM r;
      ```
 2. **Real product images from stores** haven't been confirmed to load in the owner's UI.
-3. **Old junk itti records** (category pages saved as products before the crawl fix) are still in the
-   owner's DB. The owner was offered a "re-parse stored raw pages" command but hasn't asked for it.
+3. **Old junk itti records** (category pages saved as products before the crawl fix): `reparse` removes
+   them. Built and tested on copies of saved pages; not yet run on the owner's database.
 4. **A GSMArena flip phone may show its cover-screen size** (4.1") as the main display. This is flagged
    as a spec conflict. It's unconfirmed which phone; ask the owner.
 5. Ideas offered but not requested: incremental price-only updates, parallel scraping per site.

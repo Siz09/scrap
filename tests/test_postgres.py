@@ -2,6 +2,8 @@
 
 Runs when DEVICESCOUT_TEST_PG points at a database (CI provides one); skipped otherwise."""
 
+import json
+
 import psycopg
 from psycopg.rows import dict_row
 
@@ -123,3 +125,66 @@ def test_queue_lanes(pg_url):
     assert s.claim_job(job_id=sched["id"])["id"] == sched["id"]
     s.request_cancel(mine["id"])
     assert s.job(mine["id"])["cancel_requested"] and not s.job(sched["id"])["cancel_requested"]
+
+
+def _page(s, source, url, body, when="2026-09-01T10:00:00+00:00", ctype="text/html"):
+    s.record_page(source, url, 200, "scrapling-http", ctype, body)
+    s.pg.execute("UPDATE raw.pages SET last_seen_at = %s, first_seen_at = %s WHERE source = %s AND url = %s",
+                 (when, when, source, url))
+
+
+_LISTING = "<html><body><h1>Mobile phones</h1>" + "".join(
+    f'<a href="https://shop.com.np/phone-model-{i}-8gb-256gb">Phone {i}</a>' for i in range(8)) + "</body></html>"
+_PRODUCT = ('<html><body><h1>Zeta Z9 Pro</h1><script type="application/ld+json">{"@type":"Product",'
+            '"name":"Zeta Z9 Pro 5G 8GB/256GB","brand":"Zeta","offers":{"price":"54999","priceCurrency":"NPR"}}'
+            '</script><table><tr><th>Battery</th><td>6000 mAh</td></tr><tr><th>Display</th><td>6.7 inches</td></tr>'
+            '<tr><th>Chipset</th><td>Dimensity 7300</td></tr></table></body></html>')
+
+
+def test_reparse_rereads_saved_pages_and_rebuilds_the_catalogue(pg_url):
+    from devicescout.reparse import reparse
+    s = PgStore(pg_url)
+    entries = [{"name": "shop", "type": "jsonld", "base_url": "https://shop.com.np", "region": "np"},
+               {"name": "brother-mart", "type": "shopify", "base_url": "https://brother-mart.com"},
+               {"name": "old-site", "type": "jsonld", "base_url": "https://old.com.np"}]
+    # What an old parser left behind: a category page saved as a "product".
+    ingest(s, Product(source="shop", url="https://shop.com.np/mobile-phones", name="Mobile Phones Price in Nepal",
+                      category=Category.PHONE, offers=[Offer("shop", "https://shop.com.np/mobile-phones", 999, "NPR")]))
+    ingest(s, phone("old-site"))                       # records but no saved pages: left alone
+    _page(s, "shop", "https://shop.com.np/mobile-phones", _LISTING)
+    _page(s, "shop", "https://shop.com.np/phone-model-1-8gb-256gb", _PRODUCT, when="2026-09-02T08:00:00+00:00")
+    shopify = {"products": [{"id": 1, "title": "Galaxy Buds 3 Pro", "handle": "buds3", "vendor": "Samsung",
+                             "product_type": "Earbuds", "variants": [{"title": "Default Title", "price": "24999"}]}]}
+    _page(s, "brother-mart", "https://brother-mart.com/products.json?limit=250&page=1", json.dumps(shopify),
+          ctype="application/json")
+
+    dry = {r.source: r for r in reparse(s, entries, dry_run=True, log_line=lambda _: None)}
+    assert dry["shop"].after == 1 and not dry["shop"].replaced
+    assert q(pg_url, "SELECT count(*) AS n FROM raw.records WHERE source='shop'")[0]["n"] == 1   # unchanged
+
+    res = {r.source: r for r in reparse(s, entries, log_line=lambda _: None)}
+    assert res["shop"].replaced and res["brother-mart"].replaced
+    assert res["old-site"].note == "no saved pages"
+    names = {r["name"]: r for r in q(pg_url, "SELECT name, category, primary_source FROM clean.products")}
+    assert "Mobile Phones Price in Nepal" not in names          # the old junk is gone
+    assert names["Zeta Z9 Pro 5G"]["category"] == "phone"
+    assert names["Galaxy Buds 3 Pro"]["category"] == "earbuds"
+    assert any(r["primary_source"] == "old-site" for r in names.values())
+    [offer] = q(pg_url, "SELECT scraped_at FROM clean.offers WHERE source = 'shop'")
+    assert offer["scraped_at"].isoformat().startswith("2026-09-02T08:00")   # the fetch time, not today
+    specs = q(pg_url, "SELECT specs FROM clean.products WHERE name = 'Zeta Z9 Pro 5G'")[0]["specs"]
+    assert specs["battery_mah"] == 6000
+
+
+def test_reparse_keeps_records_when_the_new_reading_lost_most_of_them(pg_url):
+    from devicescout.reparse import reparse
+    s = PgStore(pg_url)
+    for i in range(4):
+        ingest(s, phone("shop", name=f"Samsung Galaxy A{50 + i}"))
+    _page(s, "shop", "https://shop.com.np/phone-model-1", _PRODUCT)
+    entries = [{"name": "shop", "type": "jsonld", "base_url": "https://shop.com.np", "region": "np"}]
+    [r] = reparse(s, entries, log_line=lambda _: None)
+    assert not r.replaced and "force" in r.note
+    assert q(pg_url, "SELECT count(*) AS n FROM raw.records WHERE source='shop'")[0]["n"] == 4
+    [r] = reparse(s, entries, force=True, log_line=lambda _: None)
+    assert r.replaced and q(pg_url, "SELECT count(*) AS n FROM raw.records WHERE source='shop'")[0]["n"] == 1

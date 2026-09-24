@@ -179,7 +179,7 @@ def test_rank_profiles(tmp_path):
     assert compact[0].product.name.startswith("Google Pixel 9")
 
     budget = rank(phones, "balanced", Category.PHONE, max_price=800 * 140)  # NPR
-    assert [r.product.name for r in budget] == ["Google Pixel 9 128GB Obsidian"]
+    assert [r.product.name for r in budget] == ["Google Pixel 9"]
 
     assert rank(phones, "gaming", Category.PHONE, os="ios") == []
     assert all(0 <= r.coverage <= 1 and 0 <= r.score <= 100 for r in photo)

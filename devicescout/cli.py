@@ -375,6 +375,18 @@ def cmd_reprocess(args) -> None:
     print("rebuilt catalogue from raw records: " + stats.line())
 
 
+def cmd_reparse(args) -> None:
+    from .reparse import reparse
+    from .sources import load_entries
+    store = open_store(args.db)
+    if args.dry_run:
+        print("dry run: nothing is changed\n")
+    results = reparse(store, load_entries(args.sources), only=args.names or None,
+                      dry_run=args.dry_run, force=args.force)
+    if not results:
+        print("no saved pages yet: they are kept from the first scrape after the PostgreSQL switch")
+
+
 def cmd_quality(args) -> None:
     q = open_store(args.db).quality_summary()
     print(f"raw records kept: {q['raw_records']}")
@@ -655,6 +667,12 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("url")
     s.add_argument("--show", type=int, default=8, help="example links to print")
     s.set_defaults(func=cmd_inspect)
+
+    s = sub.add_parser("reparse", help="read the saved pages again with the current parsers, then rebuild the catalogue")
+    s.add_argument("names", nargs="*", help="only these websites (default: all with saved pages)")
+    s.add_argument("--dry-run", action="store_true", help="show what would change, change nothing")
+    s.add_argument("--force", action="store_true", help="replace a website's records even if the new reading has far fewer")
+    s.set_defaults(func=cmd_reparse)
 
     s = sub.add_parser("duplicates", help="cards that are probably the same device listed twice")
     s.set_defaults(func=cmd_duplicates)

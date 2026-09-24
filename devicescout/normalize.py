@@ -358,6 +358,7 @@ def clean_title(name: str) -> str:
 # devices are model + specs in some order; the model always comes first.
 _PITCH = re.compile(
     r"\s(?:\d+(?:\.\d+)?\s*-?\s*(?:mah|mp|w|hz|inch(?:es)?|\"|''|”|nits|cm|mm\s+display)(?![a-z0-9])|"
+    r"\d+\s*(?:gb|tb)\b|\d{1,2}\s*[/+]\s*\d{2,4}\s*(?:gb|tb)?\b|"
     r"(?:qualcomm|snapdragon|dimensity|mediatek|helio|exynos|tensor|kirin|unisoc|bionic|a\d{2}\s+bionic|"
     r"sony\s+lyt|octa[- ]?core|triple|quad|dual\s+camera|dual\s+rear|main\s+camera|rear\s+camera|battery|"
     r"processor|chipset|features|specs|specifications|amoled|oled|lcd|display|screen|"
