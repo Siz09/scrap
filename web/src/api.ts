@@ -167,6 +167,19 @@ export interface SourceRow {
   checked_at?: string;
   last_scrape_count?: number;
   last_scraped_at?: string;
+  last_rejected?: number;
+}
+
+export interface ScraperInfo {
+  name: string;
+  available: boolean;
+  browser: boolean;
+}
+
+export interface Quality {
+  raw_records: number;
+  by_kind: Record<string, number>;
+  top: { source: string; kind: string; field: string; n: number; example: string }[];
 }
 
 export interface Job {
@@ -212,7 +225,8 @@ export const api = {
     return request<{ total: number; items: Summary[] }>(`/api/products?${q}`);
   },
   product: (key: string) => request<ProductDetail>(`/api/products/${encodeURIComponent(key)}`),
-  sources: () => request<{ sources: SourceRow[]; file: string }>("/api/sources"),
+  sources: () => request<{ sources: SourceRow[]; file: string; scrapers: ScraperInfo[] }>("/api/sources"),
+  quality: () => request<Quality>("/api/quality"),
   startJob: (kind: "check" | "scrape", names: string[] = [], limit?: number) =>
     request<Job>("/api/jobs", { method: "POST", body: JSON.stringify({ kind, names, limit }) }),
   job: (id: string) => request<Job>(`/api/jobs/${id}`),

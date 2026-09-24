@@ -89,7 +89,8 @@ def cmd_parse_file(args) -> None:
     if not product:
         sys.exit("no product found on page")
     if args.save:
-        Store(args.db).upsert(product)
+        from .pipeline import ingest
+        ingest(Store(args.db), product)
     print(json.dumps(product.to_dict(), indent=2, default=str))
 
 
@@ -234,6 +235,36 @@ def cmd_ask(args) -> None:
         _print_advice(advice)
 
 
+def cmd_search(args) -> None:
+    store = Store(args.db)
+    category = Category(args.category) if args.category else None
+    for key in store.search(" ".join(args.text), category, limit=args.limit):
+        p = store.product(key)
+        price = f"Rs {p.best_price:,.0f}" if p.best_price else "no Nepal price"
+        print(f"{p.name:<45} {p.category.value:<11} {price}")
+
+
+def cmd_reprocess(args) -> None:
+    from .pipeline import reprocess
+    stats = reprocess(Store(args.db))
+    print("rebuilt catalogue from raw records: " + stats.line())
+
+
+def cmd_quality(args) -> None:
+    q = Store(args.db).quality_summary()
+    print(f"raw records kept: {q['raw_records']}")
+    print("issues: " + (", ".join(f"{v} {k}" for k, v in q["by_kind"].items()) or "none"))
+    for r in q["top"]:
+        print(f"  {r['n']:>5}  {r['source']:<15} {r['kind']:<13} {r['field']:<16} e.g. {r['example'][:70]}")
+
+
+def cmd_scrapers(args) -> None:
+    from .sources.backends import describe
+    for b in describe():
+        print(f"{b['name']:<18} {'installed' if b['available'] else 'not installed':<14} "
+              f"{'browser' if b['browser'] else 'http'}")
+
+
 def cmd_export(args) -> None:
     category = Category(args.category) if args.category else None
     rows = [p.to_dict() for p in Store(args.db).products(category)]
@@ -315,6 +346,21 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--sample", action="store_true",
                    help="use a built-in sample catalogue of fictional devices (to try the app)")
     s.set_defaults(func=cmd_serve)
+
+    s = sub.add_parser("search", help="full-text search the catalogue (names, aliases, chipsets)")
+    s.add_argument("text", nargs="+")
+    s.add_argument("--category", choices=[c.value for c in Category])
+    s.add_argument("--limit", type=int, default=20)
+    s.set_defaults(func=cmd_search)
+
+    s = sub.add_parser("reprocess", help="rebuild the catalogue from stored raw records (after parser updates)")
+    s.set_defaults(func=cmd_reprocess)
+
+    s = sub.add_parser("quality", help="what cleaning rejected or fixed, and where sources disagree")
+    s.set_defaults(func=cmd_quality)
+
+    s = sub.add_parser("scrapers", help="which scraper backends are installed for the fallback chain")
+    s.set_defaults(func=cmd_scrapers)
 
     s = sub.add_parser("export", help="dump the catalogue as CSV or JSON")
     s.add_argument("--format", choices=["csv", "json"], default="csv")

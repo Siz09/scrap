@@ -137,7 +137,7 @@ def test_cli_scrape_check_and_advise(tmp_path, monkeypatch, capsys):
     cli.main(["--db", db, "--sources", str(reg), "check"])
     assert "daraz-np        OK" in capsys.readouterr().out
     cli.main(["--db", db, "--sources", str(reg), "scrape", "--all"])
-    assert "daraz-np: 6 products" in capsys.readouterr().out
+    assert "daraz-np: 6 records: 6 stored" in capsys.readouterr().out
     cli.main(["--db", db, "advise", "--category", "phone", "--budget", "50k", "--json"])
     out = json.loads(capsys.readouterr().out)
     assert out["picks"][0]["name"].startswith("Redmi Note 14 Pro")

@@ -9,6 +9,7 @@ from collections.abc import Iterator
 from urllib.parse import urlparse
 
 from ..models import Product
+from .backends import NotFound, UrllibHTTP, block_reason, build_backends
 
 log = logging.getLogger(__name__)
 
@@ -16,37 +17,50 @@ USER_AGENT = "DeviceScoutBot/0.1 (+https://github.com/siz09/scrap)"
 
 
 class Fetcher:
-    """Thin, polite wrapper over Scrapling's three fetchers.
+    """Polite fetching through a chain of scrapers (see backends.py).
 
-    mode:
-      "static"  -> scrapling Fetcher (curl_cffi + browser TLS impersonation). Fast; use by default.
-      "dynamic" -> DynamicFetcher (Playwright). For JS-rendered listings.
-      "stealth" -> StealthyFetcher (Camoufox). For sites with bot protection.
-                   Only use it where the site's terms allow automated access.
+    Each request goes to the backend that last worked for that host, then falls through
+    the rest of the chain when a response looks blocked. Per-host throttling and robots.txt
+    apply to every backend alike.
+
+    mode picks where the chain starts: "static" (fast HTTP first), "dynamic" (browser
+    first, for JavaScript-heavy sites) or "stealth" (hardened browser first). Only use
+    stealth where a site's terms allow automated access.
     """
 
-    def __init__(self, mode: str = "static", delay: float = 2.0, respect_robots: bool = True):
+    def __init__(self, mode: str = "static", delay: float = 2.0, respect_robots: bool = True,
+                 backends: list[str] | list | None = None):
         self.mode = mode
         self.delay = delay
         self.respect_robots = respect_robots
         self._last_hit: dict[str, float] = {}
         self._robots: dict[str, urllib.robotparser.RobotFileParser | None] = {}
-        self._session_cm = None
-        self._session = None
+        self._backends = None
+        self._backend_spec = backends
+        self._preferred: dict[str, str] = {}     # host -> backend that last got through
+        self._broken: set[str] = set()           # backends that crashed (e.g. browser not installed)
+        self.stats: dict[str, dict[str, int]] = {}
+        self._session = None                     # tests may inject a fake robots.txt session
+
+    @property
+    def backends(self) -> list:
+        if self._backends is None:
+            spec = self._backend_spec
+            if spec and not isinstance(spec[0], str):
+                self._backends = list(spec)          # already-built backend objects (tests)
+            else:
+                self._backends = build_backends(spec)
+        return self._backends
 
     def _static(self):
-        # One cookie-keeping session per run: some stores (Daraz) set anti-bot cookies
-        # on the first HTML hit and reject JSON calls without them.
-        if self._session is None:
-            from scrapling.fetchers import FetcherSession
-            self._session_cm = FetcherSession(timeout=30, retries=2)
-            self._session = self._session_cm.__enter__()
-        return self._session
+        if self._session is not None:
+            return self._session
+        http = next((b for b in self.backends if b.name == "scrapling-http"), None)
+        return http.session() if http else _UrllibSession()
 
     def close(self) -> None:
-        if self._session_cm is not None:
-            self._session_cm.__exit__(None, None, None)
-            self._session_cm = self._session = None
+        for b in self._backends or []:
+            b.close()
 
     def __enter__(self):
         return self
@@ -60,7 +74,7 @@ class Fetcher:
         parts = urlparse(url)
         root = f"{parts.scheme}://{parts.netloc}"
         if root not in self._robots:
-            # Fetched through the same browser-like session: urllib's own reader gets 403'd by
+            # Fetched through a browser-like session: urllib's own reader gets 403'd by
             # bot walls and then treats the whole site as disallowed.
             rp: urllib.robotparser.RobotFileParser | None = urllib.robotparser.RobotFileParser()
             try:
@@ -84,27 +98,70 @@ class Fetcher:
             time.sleep(wait)
         self._last_hit[host] = time.monotonic()
 
-    def get(self, url: str, headers: dict[str, str] | None = None, mode: str | None = None):
-        """Return a Scrapling Response (a Selector subclass: .css(), .xpath(), .urljoin(), .json())."""
+    def _chain(self, host: str, mode: str, want_json: bool) -> list:
+        chain = [b for b in self.backends if b.name not in self._broken and not (want_json and b.browser)]
+        start = {"dynamic": "scrapling-dynamic", "stealth": "scrapling-stealth"}.get(mode)
+        first = self._preferred.get(host) or start
+        if first:
+            chain.sort(key=lambda b: b.name != first)
+        return chain
+
+    def _count(self, backend: str, outcome: str) -> None:
+        self.stats.setdefault(backend, {"ok": 0, "blocked": 0, "error": 0})[outcome] += 1
+
+    def get(self, url: str, headers: dict[str, str] | None = None, mode: str | None = None,
+            want_json: bool = False):
+        """Return a Scrapling Selector-like page (.css(), .urljoin(), .json(), .status, .body)."""
         if not self.allowed(url):
             raise PermissionError(f"robots.txt disallows {url}")
-        self._throttle(url)
-        mode = mode or self.mode
-        if mode == "stealth":
-            from scrapling.fetchers import StealthyFetcher
-            page = StealthyFetcher.fetch(url, headless=True, network_idle=True)
-        elif mode == "dynamic":
-            from scrapling.fetchers import DynamicFetcher
-            page = DynamicFetcher.fetch(url, headless=True, network_idle=True)
-        else:
-            page = self._static().get(url, headers=headers or {})
-        if page.status >= 400:
-            raise RuntimeError(f"HTTP {page.status} for {url}")
-        return page
+        host = urlparse(url).netloc
+        reasons = []
+        for backend in self._chain(host, mode or self.mode, want_json):
+            self._throttle(url)
+            try:
+                page = backend.fetch(url, headers or {})
+            except Exception as e:
+                self._count(backend.name, "error")
+                reasons.append(f"{backend.name}: {type(e).__name__}: {str(e)[:80]}")
+                if backend.browser:          # usually "browser not installed": don't retry it all run
+                    self._broken.add(backend.name)
+                continue
+            if getattr(page, "status", 200) in (404, 410):
+                raise NotFound(f"HTTP {page.status} for {url}")
+            reason = block_reason(page, want_json)
+            if reason:
+                self._count(backend.name, "blocked")
+                reasons.append(f"{backend.name}: {reason}")
+                continue
+            if getattr(page, "status", 200) >= 400:
+                raise RuntimeError(f"HTTP {page.status} for {url}")
+            self._count(backend.name, "ok")
+            if self._preferred.get(host) != backend.name:
+                if reasons:
+                    log.info("%s: %s got through after %s", host, backend.name, "; ".join(reasons))
+                self._preferred[host] = backend.name
+            return page
+        raise RuntimeError(f"all scrapers failed for {url}: " + "; ".join(reasons or ["no backend available"]))
 
     def get_json(self, url: str, headers: dict[str, str] | None = None):
-        page = self.get(url, headers={"Accept": "application/json, text/plain, */*", **(headers or {})}, mode="static")
+        page = self.get(url, headers={"Accept": "application/json, text/plain, */*", **(headers or {})},
+                        want_json=True)
         return response_json(page)
+
+    def summary(self) -> str:
+        """'scrapling-http 40 ok, urllib 3 ok (2 blocked)' for logs and the UI."""
+        parts = []
+        for name, s in self.stats.items():
+            extra = ", ".join(f"{s[k]} {k}" for k in ("blocked", "error") if s[k])
+            parts.append(f"{name} {s['ok']} ok" + (f" ({extra})" if extra else ""))
+        return ", ".join(parts) or "no requests"
+
+
+class _UrllibSession:
+    """Minimal .get() for robots.txt when scrapling-http is not in the chain."""
+
+    def get(self, url, **_):
+        return UrllibHTTP().fetch(url, {})
 
 
 class Source:

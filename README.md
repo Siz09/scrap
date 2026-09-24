@@ -115,7 +115,7 @@ compared 2 devices (skipped: 1 no nepal price)
      > gadgetbyte: Rs 54,999 (listed price, not a shop)  https://www.gadgetbytenepal.com/...
 ```
 
-**Uses:** photography, gaming, battery, portability, display, everyday, student, business, programming, content_creation, fitness, fast_charging, balanced. Add `:N` to set a use's priority, for example `photography:2,battery`.
+**Uses:** photography, gaming, battery, longevity (lasts for years: promised OS upgrades, recent chip), portability, display, everyday, student, business, programming, content_creation, fitness, fast_charging, balanced. Add `:N` to set a use's priority, for example `photography:2,battery`.
 
 **Must-haves:**
 - `--need 5g,nfc,gps,gpu,ois,water`
@@ -123,6 +123,54 @@ compared 2 devices (skipped: 1 no nepal price)
 - `--min-screen`, `--max-screen`, `--min-capacity`, `--min-output`
 
 **Budget formats:** `50000`, `50k`, `30k-60k`, `1.5 lakh`, `40000-`
+
+### Ask in plain words
+
+```bash
+devicescout ask "photography phone under 1.2 lakh"
+devicescout ask "long lasting android phone around 60k with 5g, no samsung"
+devicescout ask "gaming laptop between 1 lakh and 1.5 lakh with rtx"
+devicescout ask "20000mah power bank 5 hajar samma"
+```
+
+The same box sits at the top of *Find a device* in the app. It understands:
+- **The device type.**
+- **Budgets**, written as `under`, `below`, `around`, `between ... and ...`, `50k`, `1.2 lakh`, `5 hajar`, `40k samma`, `1 lakh bhitra` or `1,20,000`.
+- **Uses**, in the order you mention them: camera or photos, gaming or PUBG, battery, "long lasting" or "future proof", coding, student, fitness...
+- **OS, brands to include or avoid** ("no samsung"), and **must-haves** (`5g`, `nfc`, `waterproof`, `16gb ram`, `5000mah`, `120hz`, `65w`, `rtx`).
+
+It fills in the form so you can see and correct how it understood you. It's rule-based, so it works offline, costs nothing and gives the same result every time.
+
+### Search, data quality and reprocessing
+
+```bash
+devicescout search s24 ultra        # full-text: names, every alias a model was listed under, chipsets
+devicescout quality                 # what cleaning rejected or fixed, and where sources disagree
+devicescout reprocess               # rebuild the catalogue from stored raw records with current parsers
+devicescout scrapers                # which fallback scrapers are installed
+```
+
+## Scraping pipeline
+
+Every record goes through the same four steps (`pipeline.py`):
+
+1. **Raw.** The record is stored exactly as parsed, and duplicates are skipped by content hash. When parsers improve, `reprocess` rebuilds everything without visiting the sites again.
+2. **Clean.** Values that are impossible for the device type are dropped: a 20,000 mAh "phone" battery, a 1 kg phone, a Rs 1,999 "phone" that is really an EMI instalment, a "discount" from 10x the price. Junk names are rejected and HTML entities fixed. Every change is logged in `quality_issues`.
+3. **Refine.** Each source's value for a spec is kept. The value shown comes from the most trusted source, then from agreement between sources. For example, two shops saying ~5,000 mAh beat one saying 4,000, and the disagreement is logged.
+4. **Index.** An SQLite FTS5 full-text index covers each model's names, brand, chipset and every listing title it appeared under.
+
+Pages are fetched through a **chain of scrapers** (`sources/backends.py`):
+
+| Order | Scraper | Notes |
+|---|---|---|
+| 1 | Scrapling HTTP | curl_cffi with a real browser's network fingerprint |
+| 2 | urllib | plain Python HTTP |
+| 3 | Scrapling dynamic | Playwright |
+| 4 | Scrapling stealth | Camoufox |
+| 5 | Crawl4AI | optional |
+| 6 | Firecrawl | optional; hosted, needs `FIRECRAWL_API_KEY` |
+
+A response counts as blocked on 401/403/429/503, on a bot-wall page, or when HTML arrives where JSON was expected; the next scraper is then tried. The one that gets through is remembered for that site. A 404 is not retried. Install the optional scrapers with `pip install "devicescout[extra-scrapers]"`.
 
 ## How the advisor decides
 
@@ -173,6 +221,9 @@ To add a store, add `{"name": ..., "type": "auto", "base_url": ...}` and run `de
 | `pricing.py` | Detects fake, used or mislisted offers |
 | `storage.py` | SQLite. One row per model, matched by barcode first and then by cleaned name. Price history is kept per seller and variant, and each spec records which source it came from |
 | `scoring.py`, `advisor.py` | Use-case weights, percentile scoring, and the explained shortlist |
+| `query.py` | Turns plain-language requests into needs |
+| `pipeline.py`, `clean.py` | The raw → clean → refine → index pipeline, and reprocessing |
+| `sources/backends.py` | The scraper fallback chain and bot-wall detection |
 | `packaging/devicescout.spec` | PyInstaller one-file build, run with `pyinstaller packaging/devicescout.spec` |
 | `.github/workflows/` | `ci.yml` runs the tests and checks the committed UI build. `release.yml` builds Windows, macOS and Linux executables plus the wheel, and publishes them on `v*` tags |
 
