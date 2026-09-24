@@ -49,6 +49,8 @@ export interface Meta {
   version: string;
   read_only: boolean;
   sample: boolean;
+  jobs_mode: "local" | "queue" | "off";
+  admin_required: boolean;
 }
 
 export interface Summary {
@@ -162,7 +164,8 @@ export interface SourceRow {
   verified: boolean;
   notes: string | null;
   url: string | null;
-  check?: "OK" | "FAIL";
+  check?: "OK" | "PARTIAL" | "FAIL" | "RUNNING";
+  scrape_running?: boolean;
   check_detail?: string;
   checked_at?: string;
   last_scrape_count?: number;
@@ -174,6 +177,7 @@ export interface ScraperInfo {
   name: string;
   available: boolean;
   browser: boolean;
+  missing: string | null;
 }
 
 export interface Quality {
@@ -211,9 +215,13 @@ export interface DealItem {
 export interface Job {
   id: string;
   kind: "check" | "scrape";
-  status: "running" | "done" | "failed" | "cancelled";
+  status: "queued" | "running" | "done" | "failed" | "cancelled";
+  origin: "ui" | "schedule" | "cli" | null;
+  names: string[];
+  progress: { done?: number; total?: number; current?: string | null };
   log: string[];
-  started_at: string;
+  created_at: string;
+  started_at: string | null;
   finished_at: string | null;
 }
 
@@ -221,6 +229,30 @@ export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
   }
+}
+
+const ADMIN_KEY = "devicescout.adminKey";
+
+export function adminKey(): string {
+  try {
+    return localStorage.getItem(ADMIN_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function setAdminKey(key: string): void {
+  try {
+    if (key) localStorage.setItem(ADMIN_KEY, key);
+    else localStorage.removeItem(ADMIN_KEY);
+  } catch {
+    /* private mode: key lasts for this page only */
+  }
+}
+
+function adminHeaders(): Record<string, string> {
+  const k = adminKey();
+  return k ? { "X-Admin-Key": k } : {};
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -251,7 +283,7 @@ export const api = {
     return request<{ total: number; items: Summary[] }>(`/api/products?${q}`);
   },
   product: (key: string) => request<ProductDetail>(`/api/products/${encodeURIComponent(key)}`),
-  sources: () => request<{ sources: SourceRow[]; file: string; scrapers: ScraperInfo[] }>("/api/sources"),
+  sources: () => request<{ sources: SourceRow[]; file: string; scrapers: ScraperInfo[]; error?: string }>("/api/sources"),
   quality: () => request<Quality>("/api/quality"),
   deals: (params: Record<string, string | number | undefined>) => {
     const q = new URLSearchParams();
@@ -259,8 +291,10 @@ export const api = {
     return request<{ total: number; items: DealItem[] }>(`/api/deals?${q}`);
   },
   startJob: (kind: "check" | "scrape", names: string[] = [], limit?: number) =>
-    request<Job>("/api/jobs", { method: "POST", body: JSON.stringify({ kind, names, limit }) }),
+    request<Job>("/api/jobs", { method: "POST", headers: adminHeaders(), body: JSON.stringify({ kind, names, limit }) }),
   job: (id: string) => request<Job>(`/api/jobs/${id}`),
-  jobs: () => request<{ jobs: Job[] }>("/api/jobs"),
-  cancelJob: () => request<{ ok: boolean }>("/api/jobs/cancel", { method: "POST" }),
+  jobs: () => request<{ jobs: Job[]; worker_seen_at: string | null; jobs_mode: string }>("/api/jobs"),
+  cancelJob: () => request<{ ok: boolean }>("/api/jobs/cancel", { method: "POST", headers: adminHeaders() }),
+  verifyAdmin: (key: string) =>
+    request<{ ok: boolean }>("/api/admin/verify", { method: "POST", headers: { "X-Admin-Key": key } }),
 };

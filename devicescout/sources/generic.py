@@ -187,6 +187,9 @@ class GenericSource(Source):
                 if u not in seen and self._wanted(u):
                     seen.add(u)
                     yield u
+            if not seen:
+                # No usable sitemap: browse category pages and collect product-looking links.
+                yield from self._browse(fetcher, base)
             return
         for url in self.cfg.start_urls:
             for _ in range(self.cfg.max_pages):
@@ -200,6 +203,62 @@ class GenericSource(Source):
                 if not nxt:
                     break
                 url = page.urljoin(nxt)
+
+    _CATEGORY = re.compile(r"mobile|phone|smartphone|laptop|notebook|tablet|ipad|watch|wearable|power-?bank|"
+                           r"earbud|headphone|audio|charger|accessor|gadget|electronic", re.I)
+    _ASSET = re.compile(r"\.(jpe?g|png|webp|gif|svg|css|js|pdf|zip|xml)(\?|$)|/(cart|checkout|account|login|"
+                        r"register|wishlist|compare|search|blog|news|about|contact|faq|policy|terms)(/|$|\?)", re.I)
+
+    def _links(self, page, host: str) -> list[str]:
+        out = []
+        for href in page.css("a::attr(href)").getall():
+            full = page.urljoin(href).split("#")[0]
+            u = urlparse(full)
+            if u.netloc == host and u.path not in ("", "/") and not self._ASSET.search(full):
+                out.append(full)
+        return list(dict.fromkeys(out))
+
+    def _page(self, fetcher: Fetcher, url: str):
+        """Fetch a listing page; if it's a JavaScript shell with no links, render it in a browser."""
+        page = fetcher.get(url)
+        if len(self._links(page, urlparse(url).netloc)) < 5:
+            try:
+                page = fetcher.get(url, mode="dynamic")
+                self.fetch_mode = "dynamic"      # product pages on this site probably need it too
+            except Exception as e:
+                log.info("[%s] browser render failed for %s: %s", self.name, url, e)
+        return page
+
+    def _browse(self, fetcher: Fetcher, base: str, max_pages: int = 12) -> Iterator[str]:
+        host = urlparse(base).netloc
+        starts = list(self.cfg.start_urls) or [base]
+        queue, fetched, found, visited = list(starts), 0, set(), set()
+        categories_added = False
+        while queue and fetched < max_pages:
+            url = queue.pop(0)
+            try:
+                page = self._page(fetcher, url)
+            except Exception as e:
+                log.info("[%s] %s: %s", self.name, url, e)
+                continue
+            fetched += 1
+            visited.add(url)
+            links = self._links(page, host)
+            if not self.cfg.start_urls and not categories_added:
+                # From the homepage, visit category pages (phones, laptops...) first.
+                queue += [u for u in links if self._CATEGORY.search(urlparse(u).path)][:8]
+                categories_added = True
+            for u in links:
+                path = urlparse(u).path.strip("/")
+                # Product pages have a long, specific slug: /samsung-galaxy-a56-5g-8gb-256gb
+                slug = path.split("/")[-1]
+                words = slug.split("-")
+                looks_like_model = bool(re.search(r"\d", slug)) or len(words) >= 4
+                if (u not in found and u not in visited and u not in queue and len(slug) >= 10
+                        and looks_like_model
+                        and not (self.cfg.url_exclude and re.search(self.cfg.url_exclude, u, re.I))):
+                    found.add(u)
+                    yield u
 
     def parse(self, page) -> Product | None:
         ld = extract_jsonld_product(page) or {}
@@ -279,6 +338,8 @@ class GenericSource(Source):
                 variant=parse_variant(name), valid_until=str(valid_until)[:10] if valid_until else None,
                 original_price=original if original and price and original > price else None,
             ))
+        if not ld and not offers and not specs and len(raw) < 3:
+            return None   # a category, article or landing page, not a product
         product = Product(
             source=self.name,
             url=page.url,

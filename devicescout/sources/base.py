@@ -9,7 +9,7 @@ from collections.abc import Iterator
 from urllib.parse import urlparse
 
 from ..models import Product
-from .backends import NotFound, UrllibHTTP, block_reason, build_backends
+from .backends import FetchedPage, NotFound, UrllibHTTP, block_reason, build_backends, json_from_rendered
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +40,7 @@ class Fetcher:
         self._preferred: dict[str, str] = {}     # host -> backend that last got through
         self._broken: set[str] = set()           # backends that crashed (e.g. browser not installed)
         self.stats: dict[str, dict[str, int]] = {}
+        self.host_delay: dict[str, float] = {}   # slower pacing for sites that rate-limit (e.g. Daraz)
         self._session = None                     # tests may inject a fake robots.txt session
 
     @property
@@ -93,13 +94,13 @@ class Fetcher:
 
     def _throttle(self, url: str) -> None:
         host = urlparse(url).netloc
-        wait = self.delay - (time.monotonic() - self._last_hit.get(host, 0))
+        wait = max(self.delay, self.host_delay.get(host, 0)) - (time.monotonic() - self._last_hit.get(host, 0))
         if wait > 0:
             time.sleep(wait)
         self._last_hit[host] = time.monotonic()
 
     def _chain(self, host: str, mode: str, want_json: bool) -> list:
-        chain = [b for b in self.backends if b.name not in self._broken and not (want_json and b.browser)]
+        chain = [b for b in self.backends if b.name not in self._broken]
         start = {"dynamic": "scrapling-dynamic", "stealth": "scrapling-stealth"}.get(mode)
         first = self._preferred.get(host) or start
         if first:
@@ -110,13 +111,17 @@ class Fetcher:
         self.stats.setdefault(backend, {"ok": 0, "blocked": 0, "error": 0})[outcome] += 1
 
     def get(self, url: str, headers: dict[str, str] | None = None, mode: str | None = None,
-            want_json: bool = False):
-        """Return a Scrapling Selector-like page (.css(), .urljoin(), .json(), .status, .body)."""
+            want_json: bool = False, fallback: bool = True):
+        """Return a Scrapling Selector-like page (.css(), .urljoin(), .json(), .status, .body).
+
+        fallback=False tries only the first scraper: for cheap probes (platform detection)
+        where a refusal is an answer, not something to fight through."""
         if not self.allowed(url):
             raise PermissionError(f"robots.txt disallows {url}")
         host = urlparse(url).netloc
         reasons = []
-        for backend in self._chain(host, mode or self.mode, want_json):
+        chain = self._chain(host, mode or self.mode, want_json)
+        for backend in chain if fallback else chain[:1]:
             self._throttle(url)
             try:
                 page = backend.fetch(url, headers or {})
@@ -128,6 +133,10 @@ class Fetcher:
                 continue
             if getattr(page, "status", 200) in (404, 410):
                 raise NotFound(f"HTTP {page.status} for {url}")
+            if want_json and backend.browser and getattr(page, "status", 200) < 400:
+                raw = json_from_rendered(page)
+                if raw is not None:
+                    page = FetchedPage(raw, url, 200, backend.name)
             reason = block_reason(page, want_json)
             if reason:
                 self._count(backend.name, "blocked")
@@ -143,9 +152,9 @@ class Fetcher:
             return page
         raise RuntimeError(f"all scrapers failed for {url}: " + "; ".join(reasons or ["no backend available"]))
 
-    def get_json(self, url: str, headers: dict[str, str] | None = None):
+    def get_json(self, url: str, headers: dict[str, str] | None = None, fallback: bool = True):
         page = self.get(url, headers={"Accept": "application/json, text/plain, */*", **(headers or {})},
-                        want_json=True)
+                        want_json=True, fallback=fallback)
         return response_json(page)
 
     def summary(self) -> str:
@@ -187,13 +196,25 @@ class Source:
             if seen >= limit:
                 return
             try:
-                product = self.parse(fetcher.get(url))
+                page = fetcher.get(url, mode=self.fetch_mode)
+                product = self.parse(page)
+                if product is None and self.fetch_mode != "dynamic" and _looks_like_js_shell(page):
+                    product = self.parse(fetcher.get(url, mode="dynamic"))
             except Exception as e:
                 log.warning("[%s] failed %s: %s", self.name, url, e)
                 continue
             if product:
                 seen += 1
                 yield product
+
+
+def _looks_like_js_shell(page) -> bool:
+    """A page that is mostly script with little text: content is rendered by JavaScript."""
+    try:
+        text = page.css("body").first.get_all_text() if page.css("body") else ""
+    except Exception:
+        return False
+    return len(" ".join(text.split())) < 400
 
 
 def response_json(page):

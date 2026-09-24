@@ -68,7 +68,7 @@ def test_bait_offer_marked_in_detail(client):
 def test_sources_listed_and_jobs_blocked_in_sample_mode(client):
     s = client.get("/api/sources").json()["sources"]
     assert any(x["name"] == "daraz-np" for x in s)
-    assert client.post("/api/jobs", json={"kind": "check"}).status_code == 409
+    assert client.post("/api/jobs", json={"kind": "check"}).status_code == 403
 
 
 def test_read_only_blocks_jobs(tmp_path):
@@ -77,22 +77,25 @@ def test_read_only_blocks_jobs(tmp_path):
 
 
 def test_job_runs_in_background(tmp_path, monkeypatch):
-    import devicescout.server as server
+    import devicescout.jobs as jobs
 
-    def fake_check(entries, log, cancel, **_):
-        for e in entries:
+    def fake_check(entries, log, cancel, progress, **_):
+        for i, e in enumerate(entries):
+            progress(done=i, total=len(entries), current=e["name"])
             log(f"{e['name']} OK")
         return [{"name": e["name"], "status": "OK"} for e in entries]
 
-    monkeypatch.setattr(server, "run_check", fake_check)
+    monkeypatch.setattr(jobs, "run_check", fake_check)
     c = TestClient(create_app(tmp_path / "x.db", packaged("data/sources.json")))
+    assert c.get("/api/meta").json()["jobs_mode"] == "local"
     job = c.post("/api/jobs", json={"kind": "check", "names": ["daraz-np", "hukut"]}).json()
-    for _ in range(50):
+    for _ in range(100):
         j = c.get(f"/api/jobs/{job['id']}").json()
-        if j["status"] != "running":
+        if j["status"] not in ("queued", "running"):
             break
-        time.sleep(0.02)
-    assert j["status"] == "done" and len(j["result"]) == 2 and "hukut OK" in j["log"][-1]
+        time.sleep(0.05)
+    assert j["status"] == "done" and "hukut OK" in j["log"][-1]
+    assert j["progress"]["total"] == 2
 
 
 def test_must_options_make_sense_per_category(client):
@@ -124,3 +127,32 @@ def test_deals_endpoint(client):
     assert names["Koshi K5 Camera"]["valid_until"]
     phones = client.get("/api/deals", params={"category": "phone"}).json()["items"]
     assert [d["name"] for d in phones] == ["Koshi K5 Camera"]
+
+
+def test_admin_key_gates_the_queue(tmp_path):
+    c = TestClient(create_app(tmp_path / "x.db", packaged("data/sources.json"), read_only=True, admin_key="s3cret"))
+    meta = c.get("/api/meta").json()
+    assert meta["jobs_mode"] == "queue" and meta["admin_required"]
+    assert c.post("/api/jobs", json={"kind": "check"}).status_code == 401
+    assert c.post("/api/jobs", json={"kind": "check"}, headers={"X-Admin-Key": "wrong"}).status_code == 401
+    assert c.post("/api/admin/verify", headers={"X-Admin-Key": "s3cret"}).json() == {"ok": True}
+    job = c.post("/api/jobs", json={"kind": "check"}, headers={"X-Admin-Key": "s3cret"}).json()
+    assert job["status"] == "queued"                                  # waits for the scraper container
+    assert c.post("/api/jobs", json={"kind": "check"}, headers={"X-Admin-Key": "s3cret"}).status_code == 409
+    assert c.post("/api/jobs/cancel", headers={"X-Admin-Key": "s3cret"}).json()["cancelled"] == 1
+    assert c.get(f"/api/jobs/{job['id']}").json()["status"] == "cancelled"
+
+
+def test_scraper_claims_queued_jobs_once(tmp_path):
+    from devicescout.storage import Store
+    s = Store(tmp_path / "x.db")
+    a = s.enqueue_job("check", [], None, origin="ui")
+    assert s.claim_job()["id"] == a["id"] and s.claim_job() is None
+
+
+def test_broken_sources_file_is_reported_not_a_crash(tmp_path):
+    bad = tmp_path / "sources.json"
+    bad.write_text('{"sources": [ {"name": "x",, } ]}')
+    c = TestClient(create_app(tmp_path / "x.db", bad))
+    r = c.get("/api/sources")
+    assert r.status_code == 200 and r.json()["sources"] == [] and "can't be read" in r.json()["error"]

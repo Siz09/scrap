@@ -49,12 +49,25 @@ def test_404_is_an_answer_not_a_block():
     assert b.calls == 0
 
 
-def test_json_requests_skip_browsers_and_reject_html():
-    html = Scripted("http1", [(200, PRODUCT_HTML)])
-    browser = Scripted("browser", [(200, b'{"products": []}')], browser=True)
-    http2 = Scripted("http2", [(200, b'{"products": [1]}')])
-    assert fetcher(html, browser, http2).get_json("https://x.com.np/products.json") == {"products": [1]}
-    assert browser.calls == 0
+def test_json_requests_reject_html_and_read_browser_rendered_json():
+    html = Scripted("http1", [(200, PRODUCT_HTML)])                       # bot wall / HTML instead of JSON
+    browser = Scripted("browser", [(200, b'<html><body><pre>{"products": [1]}</pre></body></html>')],
+                       browser=True)
+    assert fetcher(html, browser).get_json("https://x.com.np/products.json") == {"products": [1]}
+    assert html.calls == 1 and browser.calls == 1
+
+
+def test_probes_do_not_fall_through():
+    a = Scripted("a", [(403, b"denied")])
+    b = Scripted("b", [(200, b'{"ok": 1}')])
+    with pytest.raises(RuntimeError):
+        fetcher(a, b).get_json("https://x.com.np/wp-json/x", fallback=False)
+    assert b.calls == 0
+
+
+def test_small_sitemaps_are_not_blocks():
+    xml = b"<?xml version='1.0'?><urlset><url><loc>https://a/p/1</loc></url></urlset>"
+    assert block_reason(FetchedPage(xml, "u", 200, "t")) is None
 
 
 def test_crashing_browser_is_disabled_for_the_run():

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type Job, type Quality, type ScraperInfo, type SourceRow } from "../api";
+import { adminKey, api, ApiError, setAdminKey, type Job, type Quality, type ScraperInfo, type SourceRow } from "../api";
 import { useApp } from "../context";
 import { relTime } from "../format";
 
@@ -7,6 +7,12 @@ const ROLE_LABELS: Record<string, string> = {
   offers: "Store (prices)", reference: "Listed prices", specs: "Specs", reviews: "Expert reviews",
 };
 const REGION_LABELS: Record<string, string> = { np: "Nepal", "np-ref": "Nepal", intl: "International" };
+const STATUS: Record<string, { label: string; tone: string }> = {
+  OK: { label: "Working", tone: "good" },
+  PARTIAL: { label: "Partial", tone: "warn" },
+  FAIL: { label: "Failing", tone: "low" },
+  RUNNING: { label: "Checking…", tone: "" },
+};
 
 export default function Sources() {
   const { meta, refreshMeta } = useApp();
@@ -15,50 +21,81 @@ export default function Sources() {
   const [scrapers, setScrapers] = useState<ScraperInfo[]>([]);
   const [quality, setQuality] = useState<Quality | null>(null);
   const [job, setJob] = useState<Job | null>(null);
+  const [workerSeen, setWorkerSeen] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [key, setKey] = useState(adminKey());
+  const [keyInput, setKeyInput] = useState("");
+  const [unlocked, setUnlocked] = useState(meta.jobs_mode === "local");
   const logRef = useRef<HTMLPreElement>(null);
 
   const load = useCallback(() => {
-    api.sources().then((r) => { setRows(r.sources); setFile(r.file); setScrapers(r.scrapers); }).catch((e) => setError(e.message));
+    api.sources().then((r) => {
+      setRows(r.sources); setFile(r.file); setScrapers(r.scrapers);
+      setError(r.error ? `Source list problem: ${r.error}` : null);
+    }).catch((e) => setError(e.message));
     api.quality().then(setQuality).catch(() => setQuality(null));
+    api.jobs().then((r) => {
+      setWorkerSeen(r.worker_seen_at);
+      // Show the job that is running or queued; otherwise the most recent one.
+      setJob(r.jobs.find((j) => j.status === "running") ?? r.jobs.find((j) => j.status === "queued") ?? r.jobs[0] ?? null);
+    }).catch(() => undefined);
   }, []);
   useEffect(load, [load]);
 
-  // Resume watching a job that's still running (e.g. after a page reload).
+  // Check a saved admin key once.
   useEffect(() => {
-    api.jobs().then((r) => { const running = r.jobs.find((j) => j.status === "running"); if (running) setJob(running); });
-  }, []);
+    if (meta.jobs_mode !== "queue" || !key) return;
+    api.verifyAdmin(key).then(() => setUnlocked(true)).catch(() => { setAdminKey(""); setKey(""); setUnlocked(false); });
+  }, [meta.jobs_mode, key]);
 
+  const active = job?.status === "running" || job?.status === "queued" || rows.some((r) => r.check === "RUNNING" || r.scrape_running);
+
+  // Live updates while anything is running (including scheduled runs started by the scraper container).
   useEffect(() => {
-    if (!job || job.status !== "running") return;
     const t = setInterval(() => {
-      api.job(job.id).then((j) => {
-        setJob(j);
-        if (j.status !== "running") { load(); refreshMeta(); }
-      });
-    }, 1000);
+      load();
+      if (!active) refreshMeta();
+    }, active ? 2000 : 15000);
     return () => clearInterval(t);
-  }, [job, load, refreshMeta]);
+  }, [active, load, refreshMeta]);
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
   }, [job?.log.length]);
 
-  const locked = meta.read_only || meta.sample;
-  const running = job?.status === "running";
+  async function unlock(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    try {
+      await api.verifyAdmin(keyInput);
+      setAdminKey(keyInput);
+      setKey(keyInput);
+      setUnlocked(true);
+      setKeyInput("");
+    } catch (err) {
+      setError(err instanceof ApiError && err.status === 401 ? "That key isn't right." : (err as Error).message);
+    }
+  }
 
   async function start(kind: "check" | "scrape", names: string[] = []) {
     setError(null);
     try {
       setJob(await api.startJob(kind, names));
     } catch (e) {
+      if (e instanceof ApiError && e.status === 401) { setAdminKey(""); setKey(""); setUnlocked(false); }
       setError((e as Error).message);
     }
   }
 
   const enabled = rows.filter((r) => r.enabled);
-  const working = enabled.filter((r) => r.check === "OK").length;
-  const checked = enabled.filter((r) => r.check).length;
+  const count = (s: string) => enabled.filter((r) => r.check === s).length;
+  const unchecked = enabled.filter((r) => !r.check).length;
+  const canRun = unlocked && meta.jobs_mode !== "off";
+  const busy = job?.status === "running" || job?.status === "queued";
+  const p = job?.progress ?? {};
+  const pct = p.total ? Math.round(((p.done ?? 0) / p.total) * 100) : 0;
+  const workerAge = workerSeen ? (Date.now() - new Date(workerSeen).getTime()) / 1000 : Infinity;
+  const workerOnline = meta.jobs_mode === "local" || workerAge < 90;
 
   return (
     <div className="sources">
@@ -66,25 +103,49 @@ export default function Sources() {
         <div>
           <h1>Data sources</h1>
           <p className="muted">
-            {checked ? `${working} of ${enabled.length} enabled sources working at last check.` : "Not checked yet."}{" "}
-            Prices come from Nepali stores; specs and review scores from international sites.
+            {[
+              count("OK") && `${count("OK")} working`,
+              count("PARTIAL") && `${count("PARTIAL")} partial`,
+              count("FAIL") && `${count("FAIL")} failing`,
+              count("RUNNING") && `${count("RUNNING")} being checked`,
+              unchecked && `${unchecked} not checked yet`,
+            ].filter(Boolean).join(" · ") || "No sources enabled."}
+            {" "}of {enabled.length} enabled sources.
           </p>
         </div>
-        <div className="actions">
-          <button type="button" className="btn ghost" disabled={locked || running} onClick={() => start("check")}>
-            Check sources
-          </button>
-          <button type="button" className="btn primary" disabled={locked || running} onClick={() => start("scrape")}>
-            Update prices
-          </button>
-        </div>
+        {canRun && (
+          <div className="actions">
+            <button type="button" className="btn ghost" disabled={busy} onClick={() => start("check")}>Check sources</button>
+            <button type="button" className="btn primary" disabled={busy} onClick={() => start("scrape")}>Update prices</button>
+          </div>
+        )}
       </div>
 
-      {locked && (
+      {meta.jobs_mode === "queue" && !workerOnline && (
+        <p className="notice bad">
+          The scraper isn't running{workerSeen ? ` (last seen ${relTime(workerSeen)})` : ""}. Jobs will wait in the
+          queue until it starts: <code>docker compose up -d scraper</code>.
+        </p>
+      )}
+      {meta.jobs_mode === "off" && (
         <p className="notice">
-          {meta.read_only
-            ? "This server is read-only: scraping runs elsewhere."
-            : "Sample mode: restart without --sample to scrape real sources."}
+          {meta.sample
+            ? "Sample mode: restart without --sample to scrape real sources."
+            : <>This site is read-only. To check and update sources from this page, set <code>DEVICESCOUT_ADMIN_KEY</code> for the web and scraper containers, then restart them.</>}
+        </p>
+      )}
+      {meta.jobs_mode === "queue" && !unlocked && (
+        <form className="notice admin" onSubmit={unlock}>
+          <label htmlFor="admin-key">Admin key</label>
+          <input id="admin-key" type="password" autoComplete="current-password" value={keyInput}
+                 onChange={(e) => setKeyInput(e.target.value)} placeholder="DEVICESCOUT_ADMIN_KEY" />
+          <button type="submit" className="btn primary">Unlock</button>
+          <span className="muted small">Visitors without the key can't start scraping.</span>
+        </form>
+      )}
+      {meta.jobs_mode === "queue" && unlocked && (
+        <p className="muted small">
+          Unlocked on this browser. <button type="button" className="link small" onClick={() => { setAdminKey(""); setKey(""); setUnlocked(false); }}>Lock</button>
         </p>
       )}
       {error && <p className="notice bad">{error}</p>}
@@ -92,22 +153,43 @@ export default function Sources() {
       {job && (
         <section className="panel job">
           <div className="job-head">
-            <h2>{job.kind === "check" ? "Checking sources" : "Updating prices"} <span className={`badge ${job.status === "done" ? "good" : job.status === "failed" ? "low" : ""}`}>{job.status}</span></h2>
-            {running && <button type="button" className="btn ghost small" onClick={() => api.cancelJob()}>Stop</button>}
+            <h2>
+              {job.kind === "check" ? "Checking sources" : "Updating prices"}
+              {job.origin === "schedule" && <span className="muted small"> (scheduled)</span>}{" "}
+              <span className={`badge ${job.status === "done" ? "good" : job.status === "failed" ? "low" : ""}`}>
+                {job.status === "queued" ? "waiting for the scraper" : job.status}
+              </span>
+            </h2>
+            {busy && canRun && <button type="button" className="btn ghost small" onClick={() => api.cancelJob().then(load)}>Stop</button>}
           </div>
-          <pre ref={logRef} className="log">{job.log.join("\n") || "Starting…"}</pre>
+          {busy && p.total ? (
+            <div className="progress" role="progressbar" aria-valuemin={0} aria-valuemax={p.total} aria-valuenow={p.done ?? 0}>
+              <div className="progress-bar" style={{ width: `${pct}%` }} />
+              <span className="progress-label">
+                {p.done ?? 0} of {p.total} done{p.current ? ` · now: ${p.current}` : ""}
+              </span>
+            </div>
+          ) : null}
+          <pre ref={logRef} className="log">{job.log.join("\n") || (job.status === "queued" ? "Queued…" : "Starting…")}</pre>
         </section>
       )}
 
       <div className="pipeline">
         <section className="panel">
           <h2>Scrapers</h2>
-          <p className="muted small">Tried in this order. When a site blocks one, the next takes over, and the winner is remembered for that site.</p>
+          <p className="muted small">
+            Tried in this order. When a site blocks one, the next takes over, and the winner is remembered for that site.
+            {meta.jobs_mode !== "local" && " Shown for the scraper container."}
+          </p>
+          {scrapers.length === 0 && <p className="muted small">The scraper hasn't reported yet. Is it running?</p>}
           <ol className="scrapers">
             {scrapers.map((b) => (
               <li key={b.name} className={b.available ? "" : "off"}>
-                <span>{b.name}</span>
-                <span className={`badge ${b.available ? "good" : ""}`}>{b.available ? "installed" : "not installed"}</span>
+                <div>
+                  <span>{b.name}</span>
+                  {b.missing && <div className="muted small">{b.missing}</div>}
+                </div>
+                <span className={`badge ${b.available ? "good" : ""}`}>{b.available ? "ready" : "not available"}</span>
               </li>
             ))}
           </ol>
@@ -138,37 +220,48 @@ export default function Sources() {
       <div className="table-wrap">
         <table className="sources-table">
           <thead>
-            <tr><th>Source</th><th>Provides</th><th>Platform</th><th>Last check</th><th>Last update</th><th><span className="sr-only">Actions</span></th></tr>
+            <tr><th>Source</th><th>Provides</th><th>Platform</th><th>Last check</th><th>Last update</th>{canRun && <th><span className="sr-only">Actions</span></th>}</tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
-              <tr key={r.name} className={r.enabled ? "" : "disabled"}>
-                <td>
-                  <div className="src-name">
-                    {r.url ? <a href={r.url} target="_blank" rel="noopener noreferrer">{r.name}</a> : r.name}
-                    {!r.enabled && <span className="badge">off</span>}
-                  </div>
-                  {r.notes && <div className="muted small clamp">{r.notes}</div>}
-                </td>
-                <td>{ROLE_LABELS[r.role ?? ""] ?? r.role}<div className="muted small">{REGION_LABELS[r.region ?? ""] ?? r.region}</div></td>
-                <td>{r.platform ?? "not detected yet"}{!r.verified && <div className="muted small">unverified</div>}</td>
-                <td>
-                  {r.check ? <span className={`badge ${r.check === "OK" ? "good" : "low"}`}>{r.check}</span> : <span className="muted">—</span>}
-                  {r.check_detail && <div className="muted small clamp" title={r.check_detail}>{r.check_detail}</div>}
-                </td>
-                <td>{r.last_scraped_at ? <>{r.last_scrape_count} items{r.last_rejected ? <span className="muted small"> ({r.last_rejected} rejected)</span> : null}<div className="muted small">{relTime(r.last_scraped_at)}</div></> : <span className="muted">—</span>}</td>
-                <td className="row-actions">
-                  <button type="button" className="link small" disabled={locked || running} onClick={() => start("check", [r.name])}>Check</button>
-                  <button type="button" className="link small" disabled={locked || running} onClick={() => start("scrape", [r.name])}>Update</button>
-                </td>
-              </tr>
-            ))}
+            {rows.map((r) => {
+              const st = r.check ? STATUS[r.check] : null;
+              return (
+                <tr key={r.name} className={r.enabled ? "" : "disabled"}>
+                  <td>
+                    <div className="src-name">
+                      {r.url ? <a href={r.url} target="_blank" rel="noopener noreferrer">{r.name}</a> : r.name}
+                      {!r.enabled && <span className="badge">off</span>}
+                    </div>
+                    {r.notes && <div className="muted small clamp">{r.notes}</div>}
+                  </td>
+                  <td>{ROLE_LABELS[r.role ?? ""] ?? r.role}<div className="muted small">{REGION_LABELS[r.region ?? ""] ?? r.region}</div></td>
+                  <td>{r.platform ?? "not detected yet"}{!r.verified && <div className="muted small">unverified</div>}</td>
+                  <td>
+                    {st ? <span className={`badge ${st.tone}`}>{r.check === "RUNNING" && <span className="spinner inline" />}{st.label}</span>
+                      : <span className="muted">not checked</span>}
+                    {r.check !== "RUNNING" && r.check_detail && <div className="muted small clamp" title={r.check_detail}>{r.check_detail}</div>}
+                    {r.checked_at && r.check !== "RUNNING" && <div className="muted small">{relTime(r.checked_at)}</div>}
+                  </td>
+                  <td>
+                    {r.scrape_running ? <span className="badge"><span className="spinner inline" />Updating…</span>
+                      : r.last_scraped_at ? <>{r.last_scrape_count} items{r.last_rejected ? <span className="muted small"> ({r.last_rejected} rejected)</span> : null}<div className="muted small">{relTime(r.last_scraped_at)}</div></>
+                      : <span className="muted">—</span>}
+                  </td>
+                  {canRun && (
+                    <td className="row-actions">
+                      <button type="button" className="link small" disabled={busy} onClick={() => start("check", [r.name])}>Check</button>
+                      <button type="button" className="link small" disabled={busy} onClick={() => start("scrape", [r.name])}>Update</button>
+                    </td>
+                  )}
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
       <p className="muted small">
-        To add a store or fix a failing one, edit <code>{file}</code> (add <code>{'{"name": "...", "type": "auto", "base_url": "https://..."}'}</code>) and press Check.
-        Respect each site's terms; DeviceScout waits between requests and follows robots.txt.
+        To add a store or fix a failing one, edit <code>{file}</code> (add <code>{'{"name": "...", "type": "auto", "base_url": "https://..."}'}</code>) and run a check.
+        DeviceScout waits between requests and follows robots.txt.
       </p>
     </div>
   );

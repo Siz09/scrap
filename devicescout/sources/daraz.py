@@ -14,7 +14,9 @@ Mall/official badge.
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from urllib.parse import urlencode
@@ -47,6 +49,20 @@ def extract_items(data) -> list[dict]:
         if isinstance(node, list) and node:
             return [i for i in node if isinstance(i, dict)]
     return []
+
+
+_PAGE_DATA = re.compile(r"window\.pageData\s*=\s*(\{.*?\})\s*;?\s*</script>", re.S)
+
+
+def items_from_html(html: str) -> list[dict]:
+    """The normal (non-ajax) catalog page embeds the same listing JSON as window.pageData."""
+    m = _PAGE_DATA.search(html)
+    if not m:
+        return []
+    try:
+        return extract_items(json.loads(m.group(1)))
+    except ValueError:
+        return []
 
 
 def _abs(url: str, base: str) -> str:
@@ -135,8 +151,17 @@ class DarazSource(Source):
             try:
                 items = extract_items(fetcher.get_json(url, headers={"Referer": self.base + "/"}))
             except Exception as e:
-                log.warning("[%s] %s: %s", self.name, url, e)
-                continue
+                # Daraz often answers the JSON endpoint with a slider-captcha page. The same
+                # listing is embedded in the normal HTML page, which browsers can load.
+                log.info("[%s] JSON blocked (%s); trying the HTML page", self.name, e)
+                try:
+                    page = fetcher.get(url.replace("ajax=true&", "").replace("&ajax=true", ""),
+                                       headers={"Referer": self.base + "/"})
+                    body = page.body.decode("utf-8", "replace") if isinstance(page.body, bytes) else str(page.body)
+                    items = items_from_html(body)
+                except Exception as e2:
+                    log.warning("[%s] %s: %s", self.name, url, e2)
+                    continue
             if not items:
                 continue
             for item in items:

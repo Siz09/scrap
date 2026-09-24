@@ -51,7 +51,7 @@ def packaged(name: str) -> Path:
 def sources_path() -> Path:
     """The user's editable copy of the source registry, created from the shipped default."""
     user = data_dir() / "sources.json"
-    if not user.exists():
+    if not user.exists() or user.stat().st_size == 0:   # empty = a failed copy or an empty bind mount
         shutil.copyfile(packaged("data/sources.json"), user)
     return user
 
