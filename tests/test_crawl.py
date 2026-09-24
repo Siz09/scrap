@@ -181,3 +181,37 @@ def test_page_without_product_data_is_not_a_product():
     from devicescout.sources import GenericSource, SiteConfig
     page = Selector("<html><body><h1>Latest mobile news</h1><p>text</p></body></html>", url="https://x/news")
     assert GenericSource(SiteConfig(name="s")).parse(page) is None
+
+
+def test_js_built_category_page_is_rendered_in_a_browser():
+    """Like hukut.com: the plain page has only menu links; product cards appear after JavaScript runs."""
+    from devicescout.sources import GenericSource, SiteConfig
+
+    nav = "".join(f'<a href="/{s}">x</a>' for s in ["laptops", "cart", "about-us", "brands", "offers", "support"])
+    rendered = nav + '<a href="/samsung-galaxy-s25-ultra-12gb-256gb">S25</a><a href="/redmi-note-14-pro-5g">R</a>'
+
+    class BrowserFetcher(FakeFetcher):
+        def get(self, url, headers=None, mode=None, want_json=False, fallback=True):
+            self.calls.append((url, mode))
+            return FakePage(f"<html><body>{rendered if mode == 'dynamic' else nav}</body></html>", url)
+
+    f = BrowserFetcher({})
+    src = GenericSource(SiteConfig(name="s", base_url="https://shop.com.np", start_urls=["https://shop.com.np/mobile-phones"]))
+    urls = list(src._browse(f, "https://shop.com.np"))
+    assert urls == ["https://shop.com.np/samsung-galaxy-s25-ultra-12gb-256gb", "https://shop.com.np/redmi-note-14-pro-5g"]
+    assert ("https://shop.com.np/mobile-phones", "dynamic") in f.calls
+    assert src.fetch_mode == "dynamic"       # its product pages will be rendered too
+
+
+def test_product_links_read_from_embedded_page_data():
+    from devicescout.sources import GenericSource, SiteConfig
+
+    data = {"props": {"pageProps": {"products": [
+        {"name": "Galaxy A56", "slug": "samsung-galaxy-a56-5g-8gb-256gb", "price": 54999},
+        {"name": "iPhone 16", "url": "/apple-iphone-16-128gb", "image": {"url": "/img/iphone-16-front-1.webp"}},
+    ]}}}
+    page = f'<html><body><script id="__NEXT_DATA__" type="application/json">{json.dumps(data)}</script></body></html>'
+    f = FakeFetcher({"shop.com.np/mobile-phones": page})
+    src = GenericSource(SiteConfig(name="s", base_url="https://shop.com.np", start_urls=["https://shop.com.np/mobile-phones"]))
+    assert list(src._browse(f, "https://shop.com.np")) == ["https://shop.com.np/apple-iphone-16-128gb",
+                                                            "https://shop.com.np/samsung-galaxy-a56-5g-8gb-256gb"]

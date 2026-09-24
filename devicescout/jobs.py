@@ -83,7 +83,7 @@ def run_check(entries: list[dict], log: Log = print, sample: int = 3, delay: flo
             status, detail = "FAIL", ""
             try:
                 if e.get("type", "auto") == "auto":
-                    report = detect(fetcher, e["base_url"])
+                    report = detect(fetcher, e["base_url"], e.get("start_urls"), e.get("region", "np"))
                     remember(e["name"], report)
                     detail = f"{report['platform']}: {report['evidence']}"
                 got = []

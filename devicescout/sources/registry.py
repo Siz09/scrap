@@ -72,10 +72,10 @@ def build(entry: dict, fetcher: Fetcher | None = None) -> Source:
     opts = {k: v for k, v in entry.items() if k not in _META}
     if kind == "auto":
         kind = cached_platform(entry["name"])
-        if not kind or kind == "unknown":
+        if not kind:                         # never checked ("unknown" = checked, found nothing typed)
             if fetcher is None:
                 raise ValueError(f"{entry['name']}: platform unknown; run `devicescout check {entry['name']}`")
-            report = detect(fetcher, entry["base_url"])
+            report = detect(fetcher, entry["base_url"], entry.get("start_urls"), entry.get("region", "np"))
             remember(entry["name"], report)
             kind = report["platform"]
             log.info("[%s] detected %s (%s)", entry["name"], kind, report["evidence"])

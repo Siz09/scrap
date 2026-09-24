@@ -17,7 +17,7 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from ..models import Offer, Product
 from ..normalize import finalize, parse_label_lines, parse_price, parse_variant
@@ -310,15 +310,65 @@ class GenericSource(Source):
                 out.append(full)
         return list(dict.fromkeys(out))
 
+    def _looks_like_product(self, url: str) -> bool:
+        # Product pages have a long, specific slug: /samsung-galaxy-a56-5g-8gb-256gb
+        slug = urlparse(url).path.strip("/").split("/")[-1]
+        looks_like_model = bool(re.search(r"\d", slug)) or len(slug.split("-")) >= 4
+        return (len(slug) >= 10 and looks_like_model
+                and not (self.cfg.url_exclude and re.search(self.cfg.url_exclude, url, re.I)))
+
+    def _embedded_links(self, page, host: str) -> list[str]:
+        """Product links inside the page's embedded JSON (stores that draw product cards with JavaScript
+        still ship the product list in __NEXT_DATA__ or similar)."""
+        base = f"{urlparse(page.url).scheme or 'https'}://{host}"
+        direct, slugs = [], []
+
+        def walk(node, depth=0):
+            if depth > 12:
+                return
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    if isinstance(v, str) and v and len(v) < 300:
+                        key = k.lower()
+                        if key in ("url", "href", "link", "path", "permalink", "canonical", "producturl", "product_url"):
+                            full = urljoin(base + "/", v)
+                            if urlparse(full).netloc == host:
+                                direct.append(full.split("#")[0])
+                        elif key in ("slug", "handle", "url_key", "urlkey") and "/" not in v.strip("/"):
+                            slugs.append(f"{base}/{v.strip('/')}")
+                    elif isinstance(v, (dict, list)):
+                        walk(v, depth + 1)
+            elif isinstance(node, list):
+                for v in node[:500]:
+                    walk(v, depth + 1)
+
+        for blob in _embedded_json(page):
+            walk(blob)
+        # Real links first; bare slugs are a guess at the URL shape (a wrong guess is just a 404).
+        return list(dict.fromkeys(u for u in direct + slugs if not self._ASSET.search(u)))
+
     def _page(self, fetcher: Fetcher, url: str):
-        """Fetch a listing page; if it's a JavaScript shell with no links, render it in a browser."""
+        """Fetch a listing page. If it has no product links (a JavaScript-built page whose product
+        cards appear only after scripts run), render it in a browser."""
+        host = urlparse(url).netloc
         page = fetcher.get(url)
-        if len(self._links(page, urlparse(url).netloc)) < 5:
+        links = self._links(page, host) + self._embedded_links(page, host)
+        products = [u for u in links if self._looks_like_product(u)]
+        log.info("[%s] %s: %d links, %d look like products%s", self.name, url, len(links), len(products),
+                 f" (e.g. {products[0]})" if products else "")
+        if not products:
             try:
-                page = fetcher.get(url, mode="dynamic")
-                self.fetch_mode = "dynamic"      # product pages on this site probably need it too
+                rendered = fetcher.get(url, mode="dynamic")
             except Exception as e:
                 log.info("[%s] browser render failed for %s: %s", self.name, url, e)
+                return page
+            rlinks = self._links(rendered, host) + self._embedded_links(rendered, host)
+            rproducts = [u for u in rlinks if self._looks_like_product(u)]
+            log.info("[%s] %s in a browser: %d links, %d look like products%s", self.name, url, len(rlinks),
+                     len(rproducts), f" (e.g. {rproducts[0]})" if rproducts else "")
+            if rproducts or len(rlinks) > len(links):
+                self.fetch_mode = "dynamic"      # product pages on this site probably need it too
+                return rendered
         return page
 
     def _browse(self, fetcher: Fetcher, base: str, max_pages: int = 12) -> Iterator[str]:
@@ -335,20 +385,13 @@ class GenericSource(Source):
                 continue
             fetched += 1
             visited.add(url)
-            links = self._links(page, host)
+            links = self._links(page, host) + self._embedded_links(page, host)
             if not self.cfg.start_urls and not categories_added:
                 # From the homepage, visit category pages (phones, laptops...) first.
                 queue += [u for u in links if self._CATEGORY.search(urlparse(u).path)][:8]
                 categories_added = True
-            for u in links:
-                path = urlparse(u).path.strip("/")
-                # Product pages have a long, specific slug: /samsung-galaxy-a56-5g-8gb-256gb
-                slug = path.split("/")[-1]
-                words = slug.split("-")
-                looks_like_model = bool(re.search(r"\d", slug)) or len(words) >= 4
-                if (u not in found and u not in visited and u not in queue and len(slug) >= 10
-                        and looks_like_model
-                        and not (self.cfg.url_exclude and re.search(self.cfg.url_exclude, u, re.I))):
+            for u in dict.fromkeys(links):
+                if u not in found and u not in visited and u not in queue and self._looks_like_product(u):
                     found.add(u)
                     yield u
 
