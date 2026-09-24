@@ -291,6 +291,9 @@ def cmd_schedule(args) -> None:
     from .jobs import clear_interrupted
     clear_interrupted()
     _import_legacy(store)
+    for old in store.jobs(limit=500):   # a scheduled run left waiting by the last container: the new one replaces it
+        if old["origin"] == "schedule" and old["status"] == "queued":
+            store.request_cancel(old["id"])
 
     def say(line: str) -> None:
         print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}", flush=True)
@@ -303,32 +306,6 @@ def cmd_schedule(args) -> None:
         status = execute(job, args.db, args.sources, fetcher_factory=Fetcher)   # prints its log as it goes
         say(f"{job['kind']} job {job['id']} {status}")
 
-    def drain() -> None:
-        """Jobs started from the website: run right away, even while a scheduled scrape
-        (hours long) is going on in its own lane."""
-        while not stop.is_set() and (job := store.claim_job(exclude_origin="schedule")):
-            run_job(job)
-            heartbeat()
-
-    def scheduled(kinds: list[str]) -> threading.Thread:
-        """The scheduled run, in its own lane (thread + database connection). It still goes
-        through the job queue, so the website shows its progress."""
-        def lane() -> None:
-            own = open_store(args.db)
-            try:
-                for kind in kinds:
-                    if stop.is_set():
-                        break
-                    queued = own.enqueue_job(kind, [], args.limit, origin="schedule")
-                    job = own.claim_job(job_id=queued["id"])
-                    if job:
-                        run_job(job)
-            finally:
-                own.close()
-        t = threading.Thread(target=lane, daemon=True, name="scheduled-run")
-        t.start()
-        return t
-
     from .jobs import recently_checked, select_entries
     first = ["scrape"]
     if args.check_first:
@@ -339,23 +316,28 @@ def cmd_schedule(args) -> None:
     next_run = time.monotonic() + args.start_in
     if args.start_in:
         say(f"first scheduled run in {args.start_in / 3600:.1f} h; watching for jobs from the website")
-    lane: threading.Thread | None = None
+    # One job at a time, oldest first: the scheduled run and anything started from the website
+    # share one line, so only one website is ever being scraped.
+    scheduled: list[str] = []          # ids of the scheduled run's jobs not finished yet
     while not stop.is_set():
-        if lane is None and time.monotonic() >= next_run:
-            lane = scheduled(first)
+        if not scheduled and next_run is not None and time.monotonic() >= next_run:
+            scheduled = [store.enqueue_job(k, [], args.limit, origin="schedule")["id"] for k in first]
             first = ["scrape"]
-        if lane is not None and not lane.is_alive():
-            lane = None
-            if args.once:
-                break
-            next_run = time.monotonic() + args.every + random.uniform(0, args.jitter)
-            say(f"next scheduled scrape in {(next_run - time.monotonic()) / 3600:.1f} h; "
-                "watching for jobs from the website")
+        job = store.claim_job()
+        if job:
+            run_job(job)
         heartbeat()
-        drain()
-        stop.wait(2)
-    if lane is not None:
-        lane.join(timeout=30)
+        if scheduled:
+            scheduled = [i for i in scheduled
+                         if (j := store.job(i)) and j["status"] in ("queued", "running")]
+            if not scheduled:          # the scheduled run is over (finished or stopped)
+                if args.once:
+                    break
+                next_run = time.monotonic() + args.every + random.uniform(0, args.jitter)
+                say(f"next scheduled scrape in {(next_run - time.monotonic()) / 3600:.1f} h; "
+                    "watching for jobs from the website")
+        if not job:
+            stop.wait(2)
     say("scheduler stopped")
 
 

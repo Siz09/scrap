@@ -54,7 +54,12 @@ export default function Sources() {
   // started here. The panel shows the one picked (default: the newest running or queued).
   const isActive = (j: Job) => j.status === "running" || j.status === "queued";
   const activeJobs = jobs.filter(isActive);
-  const job = jobs.find((j) => j.id === viewId) ?? activeJobs[0] ?? jobs[0] ?? null;
+  // One job runs at a time; the rest wait in line, oldest first.
+  const running = activeJobs.filter((j) => j.status === "running");
+  const queue = activeJobs.filter((j) => j.status === "queued")
+    .sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+  const job = jobs.find((j) => j.id === viewId) ?? running[0] ?? queue[0] ?? jobs[0] ?? null;
+  const others = job ? [...running, ...queue].filter((j) => j.id !== job.id) : [];
   const active = activeJobs.length > 0 || rows.some((r) => r.check === "RUNNING" || r.scrape_running);
   const allSourcesBusy = (kind: string) => activeJobs.some((j) => j.kind === kind && j.names.length === 0);
   const sourceBusy = (r: SourceRow) =>
@@ -211,21 +216,21 @@ export default function Sources() {
               {job.kind === "check" ? "Checking" : "Updating"} {job.names.length ? job.names.join(", ") : "all sources"}
               {job.origin === "schedule" && <span className="muted small"> (scheduled)</span>}{" "}
               <span className={`badge ${job.status === "done" ? "good" : job.status === "failed" ? "low" : ""}`}>
-                {job.status === "queued" ? "waiting for the scraper" : job.status}
+                {job.status === "queued" ? `waiting, #${queue.indexOf(job) + 1} in line` : job.status}
               </span>
             </h2>
             {busy && canRun && <button type="button" className="btn ghost small" onClick={() => api.cancelJob(job.id).then(load)}>Stop</button>}
           </div>
-          {activeJobs.filter((j) => j.id !== job.id).length > 0 && (
+          {others.length > 0 && (
             <p className="muted small">
-              Also running:{" "}
-              {activeJobs.filter((j) => j.id !== job.id).map((j) => (
+              {others.map((j) => (
                 <button key={j.id} type="button" className="link small" onClick={() => setViewId(j.id)}>
+                  {j.status === "running" ? "Now: " : `#${queue.indexOf(j) + 1} in line: `}
                   {j.kind === "check" ? "Check" : "Update"} {j.names.length ? j.names.join(", ") : "all sources"}
                   {j.origin === "schedule" ? " (scheduled)" : ""}
                   {j.progress.total ? ` · ${j.progress.done ?? 0}/${j.progress.total}` : ""}
                 </button>
-              ))}
+              )).reduce<React.ReactNode[]>((acc, el, i) => (i ? [...acc, " · ", el] : [el]), [])}
             </p>
           )}
           {busy && p.total ? (

@@ -79,10 +79,12 @@ cd web && npm run build                     # typecheck + build into devicescout
 - Extensions: pg_trgm, unaccent, btree_gin, pg_stat_statements. `SCHEMA_VERSION` "5".
 
 **Jobs** (`jobs.py`, `cli.py cmd_schedule`)
-- Two lanes: the scheduled full scrape runs in its own thread and connection. Check/Update jobs started
-  from the web page are picked up within about 2 s alongside it (`claim_job(exclude_origin="schedule")`).
-- A heartbeat runs every 30 s. On start the scraper clears flags left "running" by a job that was interrupted.
-- Scrape order: stores first, spec/review sites last (`scrape_order`).
+- **One job at a time, one website at a time** (owner's request). The scheduled run and the Check/Update
+  jobs started from the website share one queue, taken oldest first. A job started from the page waits
+  its turn; the page shows "Now: …" and "#n in line: …".
+- Sources are scraped **top to bottom in `sources.json` order** (`scrape_order` keeps the list order).
+- On start, the scraper marks jobs left "running" as failed, clears stale flags, and cancels scheduled
+  jobs still waiting from the previous container.
 - `run_scrape` also refreshes exchange rates.
 
 **Prices**

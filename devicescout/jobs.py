@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from .paths import source_status
 from .pipeline import IngestStats, ingest
 from .sources import Fetcher, build, load_entries
-from .sources.detect import cached_platform, detect, remember
+from .sources.detect import detect, remember
 from .storage import Store, open_store
 
 Log = Callable[[str], None]
@@ -165,21 +165,10 @@ def run_check(entries: list[dict], log: Log = print, sample: int = 3, delay: flo
     return results
 
 
-_SPEED = {"shopify": 0, "woocommerce": 0, "daraz": 0, "gsmarena": 1, "jsonld": 2}
-
-
-_ROLE = {"offers": 0, "reference": 1, "specs": 2, "reviews": 3}
-
-
 def scrape_order(entries: list[dict]) -> list[dict]:
-    """Stores first (prices are what the app is for), then listed-price sites, then spec and
-    review sites. Within each, quick sources first (store APIs: a whole shop in minutes) and
-    whole-site browser walks (hours) last, so data starts appearing right away."""
-    def key(e):
-        kind = e.get("type", "auto")
-        platform = cached_platform(e["name"]) if kind == "auto" else kind
-        return _ROLE.get(e.get("role", "offers"), 0), _SPEED.get(platform or "", 3)
-    return sorted(entries, key=key)
+    """The order the sources are listed in (sources.json, the Data sources page): top to
+    bottom, one site finished before the next starts."""
+    return list(entries)
 
 
 def recently_checked(entries: list[dict], hours: float = 12) -> bool:

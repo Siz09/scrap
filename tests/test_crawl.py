@@ -296,7 +296,7 @@ def test_site_crawl_stops_at_listing_budget():
     assert len(set(listing_fetches)) <= 5
 
 
-def test_quick_sources_scrape_first_and_recent_checks_are_not_repeated():
+def test_sources_scrape_top_to_bottom_and_recent_checks_are_not_repeated():
     from devicescout.jobs import _save_status, recently_checked, scrape_order
     from devicescout.sources.detect import remember
 
@@ -306,7 +306,7 @@ def test_quick_sources_scrape_first_and_recent_checks_are_not_repeated():
                {"name": "gadgetbyte", "type": "jsonld", "role": "reference"}, {"name": "brother-mart"},
                {"name": "never-checked-store"}]
     assert [e["name"] for e in scrape_order(entries)] == [
-        "brother-mart", "hukut", "never-checked-store", "gadgetbyte", "gsmarena"]
+        "gsmarena", "hukut", "gadgetbyte", "brother-mart", "never-checked-store"]
 
     assert not recently_checked(entries)
     for e in entries:
