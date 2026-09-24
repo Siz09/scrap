@@ -67,7 +67,7 @@ def test_bait_offer_marked_in_detail(client):
 
 def test_sources_listed_and_jobs_blocked_in_sample_mode(client):
     s = client.get("/api/sources").json()["sources"]
-    assert any(x["name"] == "daraz-np" for x in s)
+    assert any(x["name"] == "hukut" for x in s) and not any(x["name"] == "daraz-np" for x in s)
     assert client.post("/api/jobs", json={"kind": "check"}).status_code == 403
 
 
@@ -88,13 +88,13 @@ def test_job_runs_in_background(tmp_path, monkeypatch):
     monkeypatch.setattr(jobs, "run_check", fake_check)
     c = TestClient(create_app(tmp_path / "x.db", packaged("data/sources.json")))
     assert c.get("/api/meta").json()["jobs_mode"] == "local"
-    job = c.post("/api/jobs", json={"kind": "check", "names": ["daraz-np", "hukut"]}).json()
+    job = c.post("/api/jobs", json={"kind": "check", "names": ["brother-mart", "hukut"]}).json()
     for _ in range(100):
         j = c.get(f"/api/jobs/{job['id']}").json()
         if j["status"] not in ("queued", "running"):
             break
         time.sleep(0.05)
-    assert j["status"] == "done" and "hukut OK" in j["log"][-1]
+    assert j["status"] == "done" and any("hukut OK" in line for line in j["log"])
     assert j["progress"]["total"] == 2
 
 
@@ -130,7 +130,7 @@ def test_deals_endpoint(client):
 
 
 def test_admin_key_gates_the_queue(tmp_path):
-    c = TestClient(create_app(tmp_path / "x.db", packaged("data/sources.json"), read_only=True, admin_key="s3cret"))
+    c = TestClient(create_app(tmp_path / "x.db", packaged("data/sources.json"), worker="external", admin_key="s3cret"))
     meta = c.get("/api/meta").json()
     assert meta["jobs_mode"] == "queue" and meta["admin_required"]
     assert c.post("/api/jobs", json={"kind": "check"}).status_code == 401
@@ -156,3 +156,26 @@ def test_broken_sources_file_is_reported_not_a_crash(tmp_path):
     c = TestClient(create_app(tmp_path / "x.db", bad))
     r = c.get("/api/sources")
     assert r.status_code == 200 and r.json()["sources"] == [] and "can't be read" in r.json()["error"]
+
+
+def test_no_key_needed_by_default(tmp_path):
+    c = TestClient(create_app(tmp_path / "x.db", packaged("data/sources.json"), worker="external", admin_key=""))
+    assert c.get("/api/meta").json()["admin_required"] is False
+    assert c.post("/api/jobs", json={"kind": "check"}).json()["status"] == "queued"
+
+
+def test_manage_sources_from_the_page(tmp_path):
+    import shutil
+    src = tmp_path / "sources.json"
+    shutil.copy(packaged("data/sources.json"), src)
+    c = TestClient(create_app(tmp_path / "x.db", src, worker="external", admin_key=""))
+    r = c.post("/api/sources", json={"url": "https://www.newstore.com.np/mobile-phones"}).json()
+    assert r["source"]["name"] == "newstore" and r["source"]["base_url"] == "https://www.newstore.com.np"
+    assert r["source"]["start_urls"] == ["https://www.newstore.com.np/mobile-phones"]
+    assert r["job"]["names"] == ["newstore"]                               # checked straight away
+    assert c.post("/api/sources", json={"url": "https://www.newstore.com.np"}).status_code == 409
+    assert c.post("/api/sources", json={"url": "newstore"}).status_code == 400
+    assert c.patch("/api/sources/newstore", json={"enabled": False}).json()["enabled"] is False
+    assert c.delete("/api/sources/hukut").json()["removed"] == "hukut"
+    names = {x["name"]: x for x in c.get("/api/sources").json()["sources"]}
+    assert "hukut" not in names and names["newstore"]["enabled"] is False

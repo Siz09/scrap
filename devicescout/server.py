@@ -63,6 +63,17 @@ class AskIn(BaseModel):
     top: int = Field(default=5, ge=1, le=20)
 
 
+class SourceIn(BaseModel):
+    url: str = Field(min_length=8, max_length=500)
+    name: str | None = Field(default=None, max_length=40)
+    role: Literal["offers", "reference", "specs", "reviews"] = "offers"
+    check: bool = True       # queue a check right away
+
+
+class SourcePatch(BaseModel):
+    enabled: bool
+
+
 class JobIn(BaseModel):
     kind: Literal["check", "scrape"]
     names: list[str] = Field(default_factory=list)   # empty = all enabled
@@ -82,24 +93,24 @@ def summary(p: Product) -> dict[str, Any]:
 
 
 def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sample: bool = False,
-               admin_key: str | None = None) -> FastAPI:
-    """Job modes:
-      local  `devicescout serve` on your machine: anyone who can open the page can scrape,
-             and jobs run inside this process.
-      queue  read-only public site with DEVICESCOUT_ADMIN_KEY set: only requests carrying the
-             key can queue jobs; the scraper container picks them up.
-      off    read-only without a key, or sample data: no scraping from the web at all.
+               admin_key: str | None = None, worker: str = "local") -> FastAPI:
+    """Who runs scraping jobs started from the page:
+      local     this process (plain `devicescout serve` on your machine)
+      external  the scraper container, via the job queue in the shared database (Docker)
+      off       nobody: --read-only, or sample data
+
+    The admin key is optional. Without DEVICESCOUT_ADMIN_KEY anyone who can open the page can
+    run checks and updates (fine on your own machine). Set it before exposing the site publicly.
     """
     app = FastAPI(title="DeviceScout", version=__version__, docs_url="/api/docs", openapi_url="/api/openapi.json")
     db = str(db)
     admin_key = admin_key if admin_key is not None else (os.getenv("DEVICESCOUT_ADMIN_KEY") or None)
-    if sample:
+    if sample or read_only:
         jobs_mode = "off"
-    elif read_only:
-        jobs_mode = "queue" if admin_key else "off"
     else:
-        jobs_mode = "local"
-    worker = LocalWorker(db, sources) if jobs_mode == "local" else None
+        jobs_mode = "queue" if worker == "external" else "local"
+    admin_required = jobs_mode != "off" and bool(admin_key)
+    worker_thread = LocalWorker(db, sources) if jobs_mode == "local" else None
 
     def store() -> Store:
         return Store(db)
@@ -121,7 +132,7 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
         finally:
             s.close()
         return {**spec_meta(), "stats": stats, "version": __version__, "read_only": read_only, "sample": sample,
-                "jobs_mode": jobs_mode, "admin_required": jobs_mode == "queue"}
+                "jobs_mode": jobs_mode, "admin_required": admin_required}
 
     def run_advice(needs: Needs) -> dict:
         s = store()
@@ -268,9 +279,65 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
     def _authorize(key: str | None) -> None:
         if jobs_mode == "off":
             raise HTTPException(403, "sample data: restart without --sample to scrape" if sample else
-                                "scraping is disabled on this site (read-only, no DEVICESCOUT_ADMIN_KEY set)")
-        if jobs_mode == "queue" and not (key and hmac.compare_digest(key, admin_key)):
+                                "scraping is disabled on this site (started with --read-only)")
+        if admin_required and not (key and hmac.compare_digest(key, admin_key)):
             raise HTTPException(401, "admin key required")
+
+    def _enqueue(kind: str, names: list[str], limit: int | None = None) -> dict:
+        s = store()
+        try:
+            if any(j["status"] in ("queued", "running") and j["kind"] == kind and j["names"] == names
+                   for j in s.jobs(10)):
+                raise HTTPException(409, "the same job is already queued or running")
+            job = s.enqueue_job(kind, names, limit, origin="ui")
+        finally:
+            s.close()
+        if worker_thread:
+            worker_thread.wake()
+        return job
+
+    @app.post("/api/sources")
+    def add_source(body: SourceIn, x_admin_key: str | None = Header(default=None)):
+        """Add a store by its link; its platform is detected on the first check."""
+        _authorize(x_admin_key)
+        from .sources import new_entry, save_entries
+        try:
+            entry = new_entry(body.url, body.name, body.role)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        entries = load_entries(str(sources))
+        if any(e.get("base_url", "").rstrip("/") == entry["base_url"] for e in entries):
+            raise HTTPException(409, f"{entry['base_url']} is already in the list")
+        taken = {e["name"] for e in entries}
+        base_name, n = entry["name"], 2
+        while entry["name"] in taken:
+            entry["name"], n = f"{base_name}-{n}", n + 1
+        save_entries(str(sources), entries + [entry])
+        job = _enqueue("check", [entry["name"]]) if body.check else None
+        return {"source": entry, "job": job}
+
+    @app.patch("/api/sources/{name}")
+    def update_source(name: str, body: SourcePatch, x_admin_key: str | None = Header(default=None)):
+        _authorize(x_admin_key)
+        from .sources import save_entries
+        entries = load_entries(str(sources))
+        for e in entries:
+            if e["name"] == name:
+                e["enabled"] = body.enabled
+                save_entries(str(sources), entries)
+                return e
+        raise HTTPException(404, "no such source")
+
+    @app.delete("/api/sources/{name}")
+    def delete_source(name: str, x_admin_key: str | None = Header(default=None)):
+        _authorize(x_admin_key)
+        from .sources import save_entries
+        entries = load_entries(str(sources))
+        kept = [e for e in entries if e["name"] != name]
+        if len(kept) == len(entries):
+            raise HTTPException(404, "no such source")
+        save_entries(str(sources), kept, removed=name)
+        return {"ok": True, "removed": name}
 
     @app.post("/api/admin/verify")
     def verify_admin(x_admin_key: str | None = Header(default=None)):
@@ -280,17 +347,7 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
     @app.post("/api/jobs")
     def start_job(body: JobIn, x_admin_key: str | None = Header(default=None)):
         _authorize(x_admin_key)
-        s = store()
-        try:
-            if any(j["status"] in ("queued", "running") and j["kind"] == body.kind and j["names"] == body.names
-                   for j in s.jobs(10)):
-                raise HTTPException(409, "the same job is already queued or running")
-            job = s.enqueue_job(body.kind, body.names, body.limit, origin="ui")
-        finally:
-            s.close()
-        if worker:
-            worker.wake()
-        return job
+        return _enqueue(body.kind, body.names, body.limit)
 
     @app.get("/api/jobs")
     def list_jobs():
@@ -341,16 +398,16 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
 
 
 def serve(host: str = "127.0.0.1", port: int = 8765, db: str | Path = "", sources: str | Path = "",
-          open_browser: bool = True, read_only: bool = False, sample: bool = False) -> None:
+          open_browser: bool = True, read_only: bool = False, sample: bool = False, worker: str = "local") -> None:
     import uvicorn
 
     if sample:
         db = build_sample(sample_db())
         print(f"Using the fictional sample catalogue ({db}). Nothing here is a real price.", flush=True)
-    app = create_app(db, sources, read_only=read_only, sample=sample)
-    if read_only and not sample:
-        print("Scraping from the web page: " + ("enabled with the admin key." if os.getenv("DEVICESCOUT_ADMIN_KEY")
-              else "disabled (set DEVICESCOUT_ADMIN_KEY to enable it)."), flush=True)
+    app = create_app(db, sources, read_only=read_only, sample=sample, worker=worker)
+    if not (read_only or sample) and host not in ("127.0.0.1", "localhost") and not os.getenv("DEVICESCOUT_ADMIN_KEY"):
+        print("Note: anyone who can reach this site can start scraping. Set DEVICESCOUT_ADMIN_KEY "
+              "before exposing it to the internet.", flush=True)
     url = f"http://{'127.0.0.1' if host in ('0.0.0.0', '::') else host}:{port}/"
     print(f"DeviceScout {__version__} running at {url}  (Ctrl+C to stop)", flush=True)
     if open_browser:

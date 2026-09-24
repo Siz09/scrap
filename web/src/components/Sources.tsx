@@ -25,7 +25,9 @@ export default function Sources() {
   const [error, setError] = useState<string | null>(null);
   const [key, setKey] = useState(adminKey());
   const [keyInput, setKeyInput] = useState("");
-  const [unlocked, setUnlocked] = useState(meta.jobs_mode === "local");
+  const [unlocked, setUnlocked] = useState(!meta.admin_required);
+  const [newUrl, setNewUrl] = useState("");
+  const [newRole, setNewRole] = useState("offers");
   const logRef = useRef<HTMLPreElement>(null);
 
   const load = useCallback(() => {
@@ -44,7 +46,7 @@ export default function Sources() {
 
   // Check a saved admin key once.
   useEffect(() => {
-    if (meta.jobs_mode !== "queue" || !key) return;
+    if (!meta.admin_required || !key) return;
     api.verifyAdmin(key).then(() => setUnlocked(true)).catch(() => { setAdminKey(""); setKey(""); setUnlocked(false); });
   }, [meta.jobs_mode, key]);
 
@@ -77,20 +79,46 @@ export default function Sources() {
     }
   }
 
+  function onAuthError(e: unknown) {
+    if (e instanceof ApiError && e.status === 401) { setAdminKey(""); setKey(""); setUnlocked(false); }
+    setError((e as Error).message);
+  }
+
+  async function addSource(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    try {
+      const r = await api.addSource(newUrl.trim(), newRole);
+      setNewUrl("");
+      if (r.job) setJob(r.job);
+      load();
+    } catch (err) {
+      onAuthError(err);
+    }
+  }
+
+  async function toggle(r: SourceRow) {
+    try { await api.setSourceEnabled(r.name, !r.enabled); load(); } catch (e) { onAuthError(e); }
+  }
+
+  async function remove(r: SourceRow) {
+    if (!window.confirm(`Remove ${r.name} from the source list? Products already scraped from it stay.`)) return;
+    try { await api.removeSource(r.name); load(); } catch (e) { onAuthError(e); }
+  }
+
   async function start(kind: "check" | "scrape", names: string[] = []) {
     setError(null);
     try {
       setJob(await api.startJob(kind, names));
     } catch (e) {
-      if (e instanceof ApiError && e.status === 401) { setAdminKey(""); setKey(""); setUnlocked(false); }
-      setError((e as Error).message);
+      onAuthError(e);
     }
   }
 
   const enabled = rows.filter((r) => r.enabled);
   const count = (s: string) => enabled.filter((r) => r.check === s).length;
   const unchecked = enabled.filter((r) => !r.check).length;
-  const canRun = unlocked && meta.jobs_mode !== "off";
+  const canRun = meta.jobs_mode !== "off" && (!meta.admin_required || unlocked);
   const busy = job?.status === "running" || job?.status === "queued";
   const p = job?.progress ?? {};
   const pct = p.total ? Math.round(((p.done ?? 0) / p.total) * 100) : 0;
@@ -131,22 +159,38 @@ export default function Sources() {
         <p className="notice">
           {meta.sample
             ? "Sample mode: restart without --sample to scrape real sources."
-            : <>This site is read-only. To check and update sources from this page, set <code>DEVICESCOUT_ADMIN_KEY</code> for the web and scraper containers, then restart them.</>}
+            : "This site was started with --read-only, so scraping can't be started from here."}
         </p>
       )}
-      {meta.jobs_mode === "queue" && !unlocked && (
+      {meta.admin_required && !unlocked && (
         <form className="notice admin" onSubmit={unlock}>
           <label htmlFor="admin-key">Admin key</label>
           <input id="admin-key" type="password" autoComplete="current-password" value={keyInput}
                  onChange={(e) => setKeyInput(e.target.value)} placeholder="DEVICESCOUT_ADMIN_KEY" />
           <button type="submit" className="btn primary">Unlock</button>
-          <span className="muted small">Visitors without the key can't start scraping.</span>
+          <span className="muted small">This site has an admin key set, so only you can start scraping.</span>
         </form>
       )}
-      {meta.jobs_mode === "queue" && unlocked && (
+      {meta.admin_required && unlocked && (
         <p className="muted small">
           Unlocked on this browser. <button type="button" className="link small" onClick={() => { setAdminKey(""); setKey(""); setUnlocked(false); }}>Lock</button>
         </p>
+      )}
+      {canRun && (
+        <form className="panel add-source" onSubmit={addSource}>
+          <label htmlFor="new-url"><b>Add a store or site</b> <span className="muted small">paste its link, or a category page like …/mobile-phones</span></label>
+          <div className="add-row">
+            <input id="new-url" type="url" required placeholder="https://www.example.com.np/mobile-phones"
+                   value={newUrl} onChange={(e) => setNewUrl(e.target.value)} />
+            <select value={newRole} onChange={(e) => setNewRole(e.target.value)} aria-label="What this site provides">
+              <option value="offers">Store (prices)</option>
+              <option value="reference">Price list site</option>
+              <option value="specs">Spec database</option>
+              <option value="reviews">Review site</option>
+            </select>
+            <button type="submit" className="btn primary">Add &amp; check</button>
+          </div>
+        </form>
       )}
       {error && <p className="notice bad">{error}</p>}
 
@@ -229,9 +273,10 @@ export default function Sources() {
                 <tr key={r.name} className={r.enabled ? "" : "disabled"}>
                   <td>
                     <div className="src-name">
-                      {r.url ? <a href={r.url} target="_blank" rel="noopener noreferrer">{r.name}</a> : r.name}
-                      {!r.enabled && <span className="badge">off</span>}
+                      {r.name}
+                      {!r.enabled && <span className="badge">disabled</span>}
                     </div>
+                    {r.url && <a className="src-url small" href={r.url} target="_blank" rel="noopener noreferrer">{r.url.replace(/^https?:\/\//, "")}</a>}
                     {r.notes && <div className="muted small clamp">{r.notes}</div>}
                   </td>
                   <td>{ROLE_LABELS[r.role ?? ""] ?? r.role}<div className="muted small">{REGION_LABELS[r.region ?? ""] ?? r.region}</div></td>
@@ -249,8 +294,10 @@ export default function Sources() {
                   </td>
                   {canRun && (
                     <td className="row-actions">
-                      <button type="button" className="link small" disabled={busy} onClick={() => start("check", [r.name])}>Check</button>
-                      <button type="button" className="link small" disabled={busy} onClick={() => start("scrape", [r.name])}>Update</button>
+                      <button type="button" className="link small" disabled={busy || !r.enabled} onClick={() => start("check", [r.name])}>Check</button>
+                      <button type="button" className="link small" disabled={busy || !r.enabled} onClick={() => start("scrape", [r.name])}>Update</button>
+                      <button type="button" className="link small" onClick={() => toggle(r)}>{r.enabled ? "Disable" : "Enable"}</button>
+                      <button type="button" className="link small danger" onClick={() => remove(r)}>Remove</button>
                     </td>
                   )}
                 </tr>
