@@ -137,6 +137,11 @@ class Store:
         # still opens its own Store, so a connection is never used by two threads at once.
         self.db = sqlite3.connect(str(path), check_same_thread=False)
         self.db.row_factory = sqlite3.Row
+        # The website and the scraper container share this file: WAL lets readers keep reading
+        # while the scraper writes, and busy_timeout waits out brief write locks instead of failing.
+        self.db.execute("PRAGMA busy_timeout = 15000")
+        self.db.execute("PRAGMA journal_mode = WAL")
+        self.db.execute("PRAGMA synchronous = NORMAL")
         self.db.executescript(SCHEMA)
         cols = {r["name"] for r in self.db.execute("PRAGMA table_info(products)")}
         if "spec_candidates" not in cols:  # databases created before 0.3

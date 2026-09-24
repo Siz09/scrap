@@ -19,6 +19,7 @@ import csv
 import json
 import logging
 import os
+import re
 import sys
 
 from scrapling.parser import Selector
@@ -235,6 +236,48 @@ def cmd_ask(args) -> None:
         _print_advice(advice)
 
 
+def _duration(text: str) -> float:
+    """'6h', '90m', '1d', '3600' -> seconds."""
+    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([smhd]?)\s*", text.lower())
+    if not m:
+        raise argparse.ArgumentTypeError(f"not a duration: {text!r} (use e.g. 30m, 6h, 1d)")
+    return float(m.group(1)) * {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
+
+
+def cmd_schedule(args) -> None:
+    """Scrape every enabled source on a fixed interval, forever (the Docker scraper service)."""
+    import random
+    import signal
+    import threading
+    import time
+
+    stop = threading.Event()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, lambda *_: stop.set())
+
+    def log(line: str) -> None:
+        print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}", flush=True)
+
+    if args.check_first:
+        log("checking sources...")
+        run_check(_entries(args), log=log, fetcher_factory=Fetcher)
+    while not stop.is_set():
+        started = time.monotonic()
+        log("scrape run starting")
+        try:
+            counts = run_scrape(_entries(args), args.db, log=log, limit=args.limit, delay=args.delay,
+                                fetcher_factory=Fetcher, cancel=stop)
+            log(f"scrape run finished: {sum(counts.values())} products in {time.monotonic() - started:.0f}s")
+        except Exception as e:  # keep the service alive; the next run may succeed
+            log(f"scrape run failed: {type(e).__name__}: {e}")
+        if args.once:
+            break
+        wait = args.every + random.uniform(0, args.jitter)
+        log(f"next run in {wait / 3600:.1f} h")
+        stop.wait(wait)
+    log("scheduler stopped")
+
+
 def cmd_deals(args) -> None:
     from .deals import find_deals
     category = Category(args.category) if args.category else None
@@ -365,6 +408,16 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--sample", action="store_true",
                    help="use a built-in sample catalogue of fictional devices (to try the app)")
     s.set_defaults(func=cmd_serve)
+
+    s = sub.add_parser("schedule", help="scrape all enabled sources every N hours (runs until stopped)")
+    s.add_argument("--every", type=_duration, default=_duration("6h"), help="interval, e.g. 30m, 6h, 1d")
+    s.add_argument("--jitter", type=_duration, default=_duration("10m"),
+                   help="random extra wait so runs don't hit sites at the same minute every day")
+    s.add_argument("--limit", type=int, default=300, help="max products per source per run")
+    s.add_argument("--delay", type=float, default=2.0, help="seconds between hits to one host")
+    s.add_argument("--check-first", action="store_true", help="run a source check before the first scrape")
+    s.add_argument("--once", action="store_true", help="one run, then exit (for cron)")
+    s.set_defaults(func=cmd_schedule, names=[])
 
     s = sub.add_parser("deals", help="current deals, checked against other sellers and price history")
     s.add_argument("--category", choices=[c.value for c in Category])

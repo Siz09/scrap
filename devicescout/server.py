@@ -1,8 +1,9 @@
 """Local web app: JSON API + the built Vite frontend, served by one process.
 
-`devicescout serve` (or the desktop executable) runs this on 127.0.0.1 and opens the
-browser. `--read-only` removes the scraping endpoints so the same app can be hosted
-publicly for buyers while scraping runs elsewhere.
+In Docker this is the `web` service: `devicescout serve --host 0.0.0.0 --read-only`.
+Read-only removes the scraping endpoints, so visitors can only read; the `scraper`
+service fills the shared database on a schedule. Locally, `devicescout serve` runs
+on 127.0.0.1 with scraping enabled and opens the browser.
 """
 
 from __future__ import annotations
@@ -84,6 +85,15 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
 
     def store() -> Store:
         return Store(db)
+
+    @app.get("/api/health", include_in_schema=False)
+    def health():
+        s = store()
+        try:
+            s.db.execute("SELECT 1").fetchone()
+        finally:
+            s.close()
+        return {"ok": True, "version": __version__}
 
     @app.get("/api/meta")
     def get_meta():

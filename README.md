@@ -10,39 +10,61 @@ sources.json ─► fetch (Scrapling) ─► adapter (Daraz JSON │ Shopify │
             ─► advisor: budget + uses + must-haves ─► explained shortlist
 ```
 
-## Install
+## Run it (Docker)
 
-DeviceScout runs on your computer as a local web app: a small server plus a browser UI. There are three ways to install it.
-
-**1. Desktop app (no Python needed).** Download `DeviceScout-windows-x64.exe`, `DeviceScout-macos-arm64` or `DeviceScout-linux-x64` from the GitHub Releases page, then double-click it. A console window shows the address and your browser opens the app. Close the window to stop it. The builds are unsigned, so Windows SmartScreen and macOS Gatekeeper will warn the first time: choose "Run anyway" on Windows, or right-click then Open on macOS.
-
-**2. pip.** You need Python 3.10 or newer.
+The website and the scraper run as two containers sharing one database:
 
 ```bash
-pip install "git+https://github.com/Siz09/scrap.git"
-devicescout serve            # opens http://127.0.0.1:8765
-devicescout serve --sample   # try it with a fictional demo catalogue first
+git clone https://github.com/Siz09/scrap.git && cd scrap
+docker compose up -d
 ```
 
-**3. From source,** for development:
+This starts:
+- **web**: the website at http://localhost:8765. It's read-only, so visitors can't start scraping.
+- **scraper**: checks every source once, then scrapes all enabled sources every 6 hours (set `SCRAPE_EVERY=12h` to change it). It waits politely between requests and follows robots.txt.
+
+To give it a real domain with HTTPS, point the domain's DNS at your server and run:
+
+```bash
+DOMAIN=devicescout.example.com docker compose --profile https up -d
+```
+
+Caddy gets and renews the certificate automatically. You can then close port 8765 to the outside.
+
+Useful commands:
+
+```bash
+docker compose logs -f scraper                          # watch scraping
+docker compose exec scraper devicescout quality         # what cleaning rejected
+docker compose exec scraper devicescout scrape --all    # scrape now instead of waiting
+docker compose exec scraper devicescout reprocess       # rebuild after a parser update
+docker compose pull && docker compose up -d             # update to the latest published image
+```
+
+Data (the database, `sources.json` and caches) lives in the `data` volume at `/data`. To edit the source list, copy it out and back in:
+
+```bash
+docker compose cp scraper:/data/sources.json .
+docker compose cp ./sources.json scraper:/data/sources.json
+```
+
+Or mount your own file with `./sources.json:/data/sources.json`.
+
+The image is published to `ghcr.io/siz09/scrap` by the `Docker image` workflow on every push to `main` (the `latest` tag) and on `v*` tags. Browser-based scrapers are left out to keep the image small. Build with `--build-arg WITH_BROWSERS=true` if a source needs `fetch_mode: dynamic` or `stealth`.
+
+**Try it without scraping anything.** `docker compose run --rm -p 8765:8765 web devicescout serve --host 0.0.0.0 --no-browser --sample` serves a fictional demo catalogue.
+
+### Development without Docker
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-(cd web && npm ci && npm run build)   # builds the UI into devicescout/web/dist
+(cd web && npm ci && npm run build)   # or `npm run dev` for hot reload, proxied to the API
 pytest
-devicescout serve
+devicescout serve --sample            # local site with a fictional demo catalogue
 ```
 
-Your database, your editable copy of `sources.json`, and caches are stored in a per-user folder, never next to the program:
-
-| System | Folder |
-|---|---|
-| Windows | `%LOCALAPPDATA%\DeviceScout` |
-| macOS | `~/Library/Application Support/DeviceScout` |
-| Linux | `~/.local/share/devicescout` |
-
-Set `DEVICESCOUT_HOME` to use a different folder.
+Outside Docker, data lives in `~/.local/share/devicescout` (Linux), `~/Library/Application Support/DeviceScout` (macOS) or `%LOCALAPPDATA%\DeviceScout` (Windows). Set `DEVICESCOUT_HOME` to use a different folder.
 
 ## Using the app
 
@@ -68,18 +90,7 @@ Set `DEVICESCOUT_HOME` to use a different folder.
   - *Update prices* scrapes them and shows a live log.
   - Each source shows its last result.
 
-The app is also a PWA (installable web app): in Chrome or Edge, use "Install app" to get its own window and icon. On Android, use "Add to Home screen".
-
-## Hosting it for buyers
-
-Buyers shouldn't need to install anything. Run the scraper on your own machine or server, and serve the same app read-only:
-
-```bash
-devicescout scrape --all                                        # e.g. nightly, from cron / Task Scheduler
-devicescout serve --host 0.0.0.0 --port 8765 --read-only --no-browser
-```
-
-`--read-only` removes the scraping endpoints, so visitors can only read. Put it behind a reverse proxy with HTTPS, such as Caddy or nginx. The PWA install prompt only appears over HTTPS.
+The site is also a PWA (installable web app): over HTTPS, visitors can "Add to Home screen" on Android and iPhone, or "Install app" in Chrome and Edge, to get an app icon.
 
 ## Command line
 
@@ -227,8 +238,7 @@ To add a store, add `{"name": ..., "type": "auto", "base_url": ...}` and run `de
 | Path | What it does |
 |---|---|
 | `web/` | Vite + React + TypeScript frontend. `npm run dev` proxies `/api` to a running `devicescout serve`; `npm run build` writes to `devicescout/web/dist`. The build is committed, so a pip install from git works without Node |
-| `devicescout/server.py` | FastAPI app: `/api/meta`, `/api/advise`, `/api/products`, `/api/sources` and `/api/jobs` (background check/scrape), plus the built UI. API docs are at `/api/docs` |
-| `devicescout/app.py` | Double-click entry point: picks a free port and opens the browser |
+| `devicescout/server.py` | FastAPI app: `/api/meta`, `/api/advise`, `/api/ask`, `/api/deals`, `/api/products`, `/api/sources`, `/api/quality`, `/api/health` and `/api/jobs` (disabled in read-only mode), plus the built UI. API docs are at `/api/docs` |
 | `devicescout/jobs.py` | Check and scrape runs, shared by the CLI and the UI |
 | `devicescout/paths.py` | Per-user data folder; finds files bundled with the package |
 | `devicescout/sample.py` | The fictional demo catalogue behind `serve --sample` |
@@ -245,8 +255,8 @@ To add a store, add `{"name": ..., "type": "auto", "base_url": ...}` and run `de
 | `deals.py` | Finds deals and checks them against the market price and price history |
 | `pipeline.py`, `clean.py` | The raw → clean → refine → index pipeline, and reprocessing |
 | `sources/backends.py` | The scraper fallback chain and bot-wall detection |
-| `packaging/devicescout.spec` | PyInstaller one-file build, run with `pyinstaller packaging/devicescout.spec` |
-| `.github/workflows/` | `ci.yml` runs the tests and checks the committed UI build. `release.yml` builds Windows, macOS and Linux executables plus the wheel, and publishes them on `v*` tags |
+| `Dockerfile`, `docker-compose.yml`, `deploy/Caddyfile` | The image (website by default, scraper with `devicescout schedule`), the two-service stack, and optional HTTPS |
+| `.github/workflows/` | `ci.yml` runs the tests and checks the committed UI build. `docker.yml` builds the image for amd64 and arm64, smoke-tests it, and publishes it to GHCR |
 
 See [docs/scrapers.md](docs/scrapers.md) for the other scraping tools and when to use them.
 
@@ -255,5 +265,5 @@ See [docs/scrapers.md](docs/scrapers.md) for the other scraping tools and when t
 - **Nothing has run against a live site yet.** This build environment blocks those hosts. The tests use fixtures that match each platform's documented format, and the Daraz field names come from a working open-source client. Run `check` before you trust any source.
 - **Store listings are thin on specs.** A Daraz-only device scores with low confidence until GSMArena or a spec-rich store provides its specs. Scrape GSMArena in the same run.
 - **Specs aren't quality.** Expert scores (Notebookcheck, and DXOMARK once it's enabled) are what make the photography and gaming rankings trustworthy. `chip_tier` is a hand-made stand-in until benchmark data is added.
-- **The executable only does plain HTTP scraping.** It leaves out the browser engines to stay small (about 40 MB). Sites that need `fetch_mode: dynamic` or `stealth` need the pip install plus `scrapling install`.
+- **The default Docker image only scrapes over plain HTTP.** It leaves out the browser engines to stay small. Sites that need `fetch_mode: dynamic` or `stealth` need an image built with `WITH_BROWSERS=true`.
 - **Terms of service.** Check each site's terms and robots.txt, and keep the default delays. Prefer an official feed or API wherever a store offers one.
