@@ -166,13 +166,16 @@ def _explain(r: Ranked, needs: Needs, unverified: list[str], pool_size: int,
         raw = spec_value(p, key)
         shown = f" ({fmt(raw)})" if raw is not None else ""
         if key == "weight_g":
-            good, bad = f"lighter{shown}", f"heavier{shown}"
+            good = f"one of the lightest{shown} in this budget" if pool_size >= 4 else f"lightest{shown} of the options"
+            bad = f"heavier{shown} than alternatives"
         else:
-            good, bad = f"{label}{shown}", f"weaker {label}{shown}"
+            good = (f"top-tier {label}{shown} for this budget" if pool_size >= 4
+                    else f"best {label}{shown} of the options")
+            bad = f"weaker {label}{shown} than alternatives"
         if pct >= 0.75:
-            strengths.append(f"top-tier {good} for this budget" if pool_size >= 4 else f"best {good} of the options")
+            strengths.append(good)
         elif pct <= 0.25:
-            weaknesses.append(f"{bad} than alternatives")
+            weaknesses.append(bad)
     if unverified:
         warnings.append("could not confirm: " + ", ".join(unverified))
     if r.coverage < 0.5:
@@ -275,6 +278,8 @@ def advise(products: list[Product], needs: Needs) -> Advice:
     # Picks are scored only against devices the buyer can afford, so "top-tier X for this
     # budget" is literally true. Stretch candidates are judged on a combined scale.
     affordable = [p for p in pool if not needs.budget_max or _local_price(p, needs) <= needs.budget_max]
+    # Devices within stretch range but over budget count as "over budget" in the summary.
+    excluded["over_budget"] += len(pool) - len(affordable)
     in_budget = sorted(scored(affordable), key=lambda r: r.score, reverse=True)
     top = in_budget[: needs.top]
 
@@ -295,4 +300,4 @@ def advise(products: list[Product], needs: Needs) -> Advice:
         if best_over and (best_in is None or best_over.score >= best_in + STRETCH_MIN_GAIN):
             stretch_pick = pick(best_over, len(combined))
 
-    return Advice(needs, [pick(r, len(in_budget)) for r in top], value_pick, stretch_pick, len(pool), excluded)
+    return Advice(needs, [pick(r, len(in_budget)) for r in top], value_pick, stretch_pick, len(affordable), excluded)
