@@ -229,3 +229,11 @@ def test_likely_same_flags_leftovers_but_not_other_models():
     assert likely_same("samsung galaxy a56", "samsung galaxy a56 awesome edition")
     assert not likely_same("samsung galaxy s24", "samsung galaxy s24 ultra")
     assert not likely_same("apple iphone 16", "apple iphone 16 pro max")
+
+
+def test_processor_is_the_chip_not_the_core_layout():
+    from devicescout.normalize import normalize_specs
+    raw = {"Platform / CPU": "Octa-core (1x2.8 GHz Cortex-720 & 4x2.4 GHz Cortex-720)",
+           "Platform / Chipset": "Qualcomm SM7635 Snapdragon 7s Gen 3 (4 nm)"}
+    assert normalize_specs(raw, Category.PHONE)["chipset"].startswith("Qualcomm SM7635")
+    assert normalize_specs({"CPU": "Octa-core 2.2 GHz"}, Category.PHONE)["chipset"] == "Octa-core 2.2 GHz"

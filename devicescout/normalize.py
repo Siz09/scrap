@@ -164,6 +164,9 @@ _LABELS: dict[str, tuple[str, ...]] = {
 }
 
 
+_CORE_LAYOUT = re.compile(r"\s*(?:single|dual|quad|hexa|octa|deca|\d+)[- ]?core\b|\s*\d+\s*x\s*\d", re.I)
+
+
 def _match(label: str, key: str) -> bool:
     # Word-boundary match so "os" hits "Platform / OS" but not "Positioning".
     lab = label.lower()
@@ -198,8 +201,12 @@ def normalize_specs(raw: dict[str, str], category: Category) -> dict[str, Any]:
                 specs["os"] = os_name
             if (n := parse_os_upgrades(v)):
                 specs["os_upgrades"] = n
-        elif _match(label, "chipset") and "chipset" not in specs:
-            specs["chipset"] = v.split("\n")[0][:120]
+        elif _match(label, "chipset"):
+            # 'Chipset: Snapdragon 7s Gen 3' beats 'CPU: Octa-core (1x2.8 GHz Cortex-720 ...)':
+            # a core layout names no chip, so it is only kept when nothing better turns up.
+            first = v.split("\n")[0][:120]
+            if "chipset" not in specs or (_CORE_LAYOUT.match(specs["chipset"]) and not _CORE_LAYOUT.match(first)):
+                specs["chipset"] = first
         elif _match(label, "gpu") and "gpu" not in specs:
             specs["gpu"] = v[:120]
         elif _match(label, "refresh"):

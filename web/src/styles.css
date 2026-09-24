@@ -253,7 +253,7 @@ input, select {
 .detail-price strong { font-size: 1.5rem; color: var(--accent); }
 tr.suspicious td { opacity: .6; }
 tr.suspicious td:first-child a { text-decoration: line-through; }
-.spec-groups { display: flex; flex-direction: column; gap: 1.1rem; max-width: 640px; }
+.spec-groups { display: flex; flex-direction: column; gap: 1.1rem; }
 .spec-group h3 { font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-bottom: .2rem; }
 .spec-group dl { margin: 0; }
 .spec-row { display: flex; justify-content: space-between; gap: 1rem; padding: .35rem 0; border-bottom: 1px solid var(--line); }
