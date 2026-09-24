@@ -8,3 +8,4 @@ venv/
 /build/
 /dist/
 web/node_modules/
+.env

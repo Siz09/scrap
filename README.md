@@ -16,9 +16,12 @@ The website and the scraper run as two containers sharing one database:
 
 ```bash
 git clone https://github.com/Siz09/scrap.git && cd scrap
-export DEVICESCOUT_ADMIN_KEY="$(openssl rand -hex 16)"   # your key for the Data sources page; keep it
+cp .env.example .env          # Windows PowerShell: Copy-Item .env.example .env
+# edit .env and set DEVICESCOUT_ADMIN_KEY (your key for the Data sources page)
 docker compose up -d --build
 ```
+
+Settings live in `.env`, which Docker Compose reads automatically in any shell (PowerShell, cmd, bash). The file is git-ignored, so your key is never committed.
 
 This starts:
 - **web** (`ghcr.io/siz09/scrap`): the website at http://localhost:8765. It's read-only for visitors. To run **Check sources** or **Update prices** from the *Data sources* page, enter your `DEVICESCOUT_ADMIN_KEY` there. The site queues the job and the scraper container runs it, with a live progress bar. Without the key set, the page is purely informational.
