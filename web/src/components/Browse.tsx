@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type Summary } from "../api";
 import { useApp } from "../context";
-import { formatSpec, keySpecs, npr, parseAmount } from "../format";
+import { chipKeys, chipSpec, npr, parseAmount } from "../format";
 
 const PAGE = 40;
 
@@ -92,8 +92,8 @@ export default function Browse() {
                 <div className="muted small">★ {p.rating.toFixed(1)}{p.review_count ? ` (${p.review_count.toLocaleString("en-IN")})` : ""}</div>
               )}
               <ul className="specline compact">
-                {keySpecs(p.category, p.specs, 4).map((k) => (
-                  <li key={k}>{formatSpec(k, p.specs[k], meta.specs[k])}</li>
+                {chipKeys(p.category, p.specs).map((k) => (
+                  <li key={k}>{chipSpec(k, p.specs[k], meta.specs[k])}</li>
                 ))}
               </ul>
               <button type="button" className={`btn ghost small ${inCompare ? "on" : ""}`} aria-pressed={inCompare}

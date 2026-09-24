@@ -59,7 +59,22 @@ def test_shopify_crawl_stops_at_empty_page():
     src = ShopifySource(name="shop", base_url="https://shop.com.np", collections=["phones"], max_pages=5)
     products = list(src.crawl(f))
     assert [p.name for p in products] == ["Samsung Galaxy A56 5G", "Spigen Tough Armor Case for Galaxy A56"]
-    assert all("/collections/phones/products.json" in u for u in f.calls)
+    assert all("/collections/phones/products.json" in u or "/collections.json" in u for u in f.calls)
+
+
+def test_shopify_also_crawls_sale_and_festival_collections():
+    shop = fixture("shopify_products.json")
+    f = FakeFetcher({
+        "/collections.json": {"collections": [{"handle": "phones", "title": "Phones"},
+                                              {"handle": "dashain-offer", "title": "Dashain Offer"},
+                                              {"handle": "cables", "title": "Cables"}]},
+        "/collections/phones/products.json?limit=250&page=1": {"products": shop["products"][:1]},
+        "/collections/dashain-offer/products.json?limit=250&page=1": {"products": shop["products"][1:]},
+        "page=2": {"products": []},
+    })
+    src = ShopifySource(name="shop", base_url="https://shop.com.np", collections=["phones"], max_pages=2)
+    assert len(list(src.crawl(f))) == 2
+    assert any("dashain-offer" in u for u in f.calls) and not any("cables" in u for u in f.calls)
 
 
 def test_woocommerce_resolves_category_slugs():

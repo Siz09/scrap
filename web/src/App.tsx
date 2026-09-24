@@ -3,6 +3,7 @@ import { api, type Meta } from "./api";
 import Advisor from "./components/Advisor";
 import Browse from "./components/Browse";
 import Compare from "./components/Compare";
+import Deals from "./components/Deals";
 import ProductDetail from "./components/ProductDetail";
 import Sources from "./components/Sources";
 import { AppContext } from "./context";
@@ -24,6 +25,7 @@ function useHashRoute(): [string, string | null] {
 
 const NAV = [
   { id: "advisor", label: "Find a device" },
+  { id: "deals", label: "Deals" },
   { id: "browse", label: "Browse" },
   { id: "compare", label: "Compare" },
   { id: "sources", label: "Data sources" },
@@ -107,6 +109,7 @@ export default function App() {
         {ctx && (
           <AppContext.Provider value={ctx}>
             {page === "advisor" && <Advisor />}
+            {page === "deals" && <Deals />}
             {page === "browse" && <Browse />}
             {page === "compare" && <Compare />}
             {page === "sources" && <Sources />}

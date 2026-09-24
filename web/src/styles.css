@@ -290,6 +290,30 @@ tr.suspicious td:first-child a { text-decoration: line-through; }
 .scrapers li.off span:first-child { color: var(--muted); }
 .issues { list-style: none; padding: 0; margin: .4rem 0 0; display: grid; gap: .45rem; font-size: .88rem; }
 
+/* ---- deals ---- */
+.deal-grid { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+.deal { position: relative; display: flex; flex-direction: column; gap: .3rem; }
+.deal.verified { border-color: var(--good); }
+.deal.doubtful { border-style: dashed; }
+.deal h3 { font-size: 1rem; }
+.deal h3 a { color: var(--text); }
+.deal-ribbon {
+  align-self: flex-start; background: var(--good); color: var(--surface);
+  font-size: .75rem; font-weight: 700; border-radius: 99px; padding: .15rem .55rem;
+}
+.deal-price strong { font-size: 1.2rem; }
+.deal-price s { margin-left: .3rem; }
+.verdicts { display: flex; flex-wrap: wrap; gap: .3rem; margin: .2rem 0; }
+.verdicts .badge { margin-left: 0; }
+.deal-facts { margin: .2rem 0; display: grid; grid-template-columns: 1fr 1fr; gap: .2rem .8rem; font-size: .85rem; }
+.deal-facts div { display: flex; flex-direction: column; }
+.deal-facts dt { color: var(--muted); font-size: .75rem; }
+.deal-facts dd { margin: 0; font-weight: 600; }
+.deal-facts .pos { color: var(--good); }
+.deal-facts .neg { color: var(--bad); }
+.deal .btn { margin-top: auto; align-self: flex-start; }
+.toolbar label.toolbar-check { display: flex; align-items: center; gap: .5rem; align-self: end; min-height: 40px; color: var(--text); font-size: .9rem; }
+
 /* ---- small screens ---- */
 @media (max-width: 860px) {
   .pipeline { grid-template-columns: 1fr; }

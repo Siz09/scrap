@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS offers (
     seller TEXT,
     official INTEGER,
     original_price REAL,
+    valid_until TEXT,
     PRIMARY KEY (product_key, url, variant, scraped_at)
 );
 CREATE INDEX IF NOT EXISTS idx_products_category ON products(category);
@@ -140,7 +141,9 @@ class Store:
         cols = {r["name"] for r in self.db.execute("PRAGMA table_info(products)")}
         if "spec_candidates" not in cols:  # databases created before 0.3
             self.db.execute("ALTER TABLE products ADD COLUMN spec_candidates TEXT NOT NULL DEFAULT '{}'")
-            self.db.commit()
+        if "valid_until" not in {r["name"] for r in self.db.execute("PRAGMA table_info(offers)")}:
+            self.db.execute("ALTER TABLE offers ADD COLUMN valid_until TEXT")
+        self.db.commit()
 
     def close(self) -> None:
         self.db.close()
@@ -211,11 +214,12 @@ class Store:
         for o in p.offers:
             self.db.execute(
                 """INSERT OR REPLACE INTO offers (product_key, source, url, variant, price, currency,
-                     in_stock, scraped_at, region, seller, official, original_price)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     in_stock, scraped_at, region, seller, official, original_price, valid_until)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (key, o.source, o.url, o.variant or "", o.price, o.currency,
                  None if o.in_stock is None else int(o.in_stock), o.scraped_at or _now(),
-                 o.region, o.seller, None if o.official is None else int(o.official), o.original_price),
+                 o.region, o.seller, None if o.official is None else int(o.official), o.original_price,
+                 o.valid_until),
             )
         self.db.commit()
         return key
@@ -238,7 +242,8 @@ class Store:
                       in_stock=None if o["in_stock"] is None else bool(o["in_stock"]),
                       scraped_at=o["scraped_at"], region=o["region"], seller=o["seller"],
                       official=None if o["official"] is None else bool(o["official"]),
-                      variant=o["variant"] or None, original_price=o["original_price"])
+                      variant=o["variant"] or None, original_price=o["original_price"],
+                      valid_until=o["valid_until"])
                 for o in self.db.execute(
                     """SELECT * FROM offers o WHERE product_key = ? AND scraped_at = (
                          SELECT MAX(scraped_at) FROM offers

@@ -182,6 +182,19 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
         return {**summary(p), "offers": offers, "history": history, "spec_sources": spec_sources,
                 "gtin": p.gtin, "updated_at": p.updated_at}
 
+    @app.get("/api/deals")
+    def get_deals(category: Category | None = None, verified_only: bool = True,
+                  max_price: float | None = None, limit: int = Query(60, le=500)):
+        from .deals import find_deals
+        s = store()
+        try:
+            deals = find_deals(s, category, verified_only)
+        finally:
+            s.close()
+        if max_price is not None:
+            deals = [d for d in deals if (d.offer.price_npr or 0) <= max_price]
+        return {"total": len(deals), "items": [d.to_dict() for d in deals[:limit]]}
+
     @app.get("/api/quality")
     def get_quality():
         s = store()

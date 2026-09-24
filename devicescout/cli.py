@@ -235,6 +235,25 @@ def cmd_ask(args) -> None:
         _print_advice(advice)
 
 
+def cmd_deals(args) -> None:
+    from .deals import find_deals
+    category = Category(args.category) if args.category else None
+    deals = find_deals(Store(args.db), category, verified_only=not args.all)
+    if not deals:
+        print("No deals right now." + ("" if args.all else " (--all also shows unverified store claims)"))
+    for d in deals[: args.limit]:
+        o = d.offer
+        was = f" (was Rs {o.original_price:,.0f}, claims {d.claimed_pct:g}% off)" if d.claimed_pct else ""
+        if d.saving_pct is None:
+            real = "no market price to compare"
+        else:
+            where = "below" if d.saving_pct >= 0 else "above"
+            real = f"{abs(d.saving_pct):g}% {where} market Rs {d.market_price:,.0f}"
+        ends = f", ends {o.valid_until}" if o.valid_until else ""
+        print(f"{d.product.name:<32} Rs {o.price_npr:>9,.0f} at {o.seller or o.source}{was}")
+        print(f"{'':<32} {real} | {', '.join(d.verdicts)}{ends}")
+
+
 def cmd_search(args) -> None:
     store = Store(args.db)
     category = Category(args.category) if args.category else None
@@ -346,6 +365,12 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--sample", action="store_true",
                    help="use a built-in sample catalogue of fictional devices (to try the app)")
     s.set_defaults(func=cmd_serve)
+
+    s = sub.add_parser("deals", help="current deals, checked against other sellers and price history")
+    s.add_argument("--category", choices=[c.value for c in Category])
+    s.add_argument("--all", action="store_true", help="include store claims we couldn't verify")
+    s.add_argument("--limit", type=int, default=30)
+    s.set_defaults(func=cmd_deals)
 
     s = sub.add_parser("search", help="full-text search the catalogue (names, aliases, chipsets)")
     s.add_argument("text", nargs="+")

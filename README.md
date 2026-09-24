@@ -52,6 +52,12 @@ Set `DEVICESCOUT_HOME` to use a different folder.
   3. Add any must-haves (5G, NFC, minimum RAM, maximum weight...) and an OS.
 
   Results update as you change the inputs. Each device card shows a fit score, a confidence level, the reasons for its placing, and where to buy it. You'll also see a *Save money* pick and a *Worth stretching?* pick when one of them applies.
+- **Deals.** Discounts and price cuts, each checked against other sellers' prices and the recorded price history instead of the store's crossed-out price. Each deal shows:
+  - A verdict: *Real deal* (12%+ below market), *Good price* (7–12%), *Price dropped*, *Lowest we've seen*, or warnings like *Discount on paper only* and *Crossed-out price looks inflated*.
+  - The market price and what you actually save.
+  - The sale end date, when the site publishes one.
+
+  By default only confirmed deals appear.
 - **Browse.** Search and filter the whole catalogue, sorted by price or rating.
 - **Device page.**
   - Every Nepali seller's price, including ones ignored as implausible (possible fakes).
@@ -141,6 +147,20 @@ The same box sits at the top of *Find a device* in the app. It understands:
 
 It fills in the form so you can see and correct how it understood you. It's rule-based, so it works offline, costs nothing and gives the same result every time.
 
+### Deals
+
+```bash
+devicescout deals                   # confirmed deals, biggest real saving first
+devicescout deals --category phone --all   # include store claims we couldn't confirm
+```
+
+Deals come from normal scraping:
+- Stores' own "was" prices (Daraz original price, Shopify compare-at price, WooCommerce regular price, schema.org list price).
+- Sale end dates (`priceValidUntil`).
+- Price cuts seen between scrapes.
+
+Shopify stores' sale and festival collections (sale, offer, flash, Dashain, Tihar...) are found and crawled automatically.
+
 ### Search, data quality and reprocessing
 
 ```bash
@@ -222,6 +242,7 @@ To add a store, add `{"name": ..., "type": "auto", "base_url": ...}` and run `de
 | `storage.py` | SQLite. One row per model, matched by barcode first and then by cleaned name. Price history is kept per seller and variant, and each spec records which source it came from |
 | `scoring.py`, `advisor.py` | Use-case weights, percentile scoring, and the explained shortlist |
 | `query.py` | Turns plain-language requests into needs |
+| `deals.py` | Finds deals and checks them against the market price and price history |
 | `pipeline.py`, `clean.py` | The raw → clean → refine → index pipeline, and reprocessing |
 | `sources/backends.py` | The scraper fallback chain and bot-wall detection |
 | `packaging/devicescout.spec` | PyInstaller one-file build, run with `pyinstaller packaging/devicescout.spec` |

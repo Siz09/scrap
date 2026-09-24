@@ -182,6 +182,32 @@ export interface Quality {
   top: { source: string; kind: string; field: string; n: number; example: string }[];
 }
 
+export interface DealItem {
+  key: string;
+  name: string;
+  brand: string | null;
+  category: string;
+  image: string | null;
+  rating: number | null;
+  specs: Specs;
+  seller: string;
+  url: string;
+  variant: string | null;
+  official: boolean | null;
+  in_stock: boolean | null;
+  price: number;
+  original_price: number | null;
+  valid_until: string | null;
+  claimed_pct: number | null;
+  market_price: number | null;
+  saving: number | null;
+  saving_pct: number | null;
+  lowest_seen: number | null;
+  dropped_from: number | null;
+  verdicts: string[];
+  verified: boolean;
+}
+
 export interface Job {
   id: string;
   kind: "check" | "scrape";
@@ -227,6 +253,11 @@ export const api = {
   product: (key: string) => request<ProductDetail>(`/api/products/${encodeURIComponent(key)}`),
   sources: () => request<{ sources: SourceRow[]; file: string; scrapers: ScraperInfo[] }>("/api/sources"),
   quality: () => request<Quality>("/api/quality"),
+  deals: (params: Record<string, string | number | undefined>) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== "") q.set(k, String(v));
+    return request<{ total: number; items: DealItem[] }>(`/api/deals?${q}`);
+  },
   startJob: (kind: "check" | "scrape", names: string[] = [], limit?: number) =>
     request<Job>("/api/jobs", { method: "POST", body: JSON.stringify({ kind, names, limit }) }),
   job: (id: string) => request<Job>(`/api/jobs/${id}`),

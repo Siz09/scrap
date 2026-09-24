@@ -71,6 +71,7 @@ class Offer:
     variant: str | None = None       # "8/256", "Midnight 41mm", ...
     original_price: float | None = None
     suspicious: bool = False         # set by pricing.flag_suspicious (fake/clone/mislisted)
+    valid_until: str | None = None   # sale end date when the site publishes one (priceValidUntil)
 
     @property
     def price_npr(self) -> float | None:

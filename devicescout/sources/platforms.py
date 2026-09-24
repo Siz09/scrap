@@ -56,8 +56,22 @@ class ShopifySource(Source):
         self.max_pages = max_pages
         self.category_hint = category_hint
 
-    def _pages(self) -> Iterator[tuple[str, str]]:
-        targets = [(f"{self.base}/collections/{h}/products.json", h) for h in self.collections] or [
+    SALE_HANDLE = re.compile(r"sale|deal|offer|discount|clearance|flash|dashain|tihar|festive|festival|"
+                             r"black-friday|new-year|combo", re.I)
+
+    def sale_collections(self, fetcher: Fetcher) -> list[str]:
+        """Handles of the store's sale/festival collections, from /collections.json."""
+        try:
+            data = fetcher.get_json(f"{self.base}/collections.json?limit=250")
+        except Exception as e:
+            log.info("[%s] no collections list: %s", self.name, e)
+            return []
+        return [c["handle"] for c in data.get("collections", [])
+                if isinstance(c, dict) and self.SALE_HANDLE.search(c.get("handle", "") + " " + c.get("title", ""))]
+
+    def _pages(self, extra: list[str] = ()) -> Iterator[tuple[str, str]]:
+        handles = list(self.collections) + [h for h in extra if h not in self.collections]
+        targets = [(f"{self.base}/collections/{h}/products.json", h) for h in handles] or [
             (f"{self.base}/products.json", "")
         ]
         for url, handle in targets:
@@ -97,7 +111,11 @@ class ShopifySource(Source):
 
     def crawl(self, fetcher: Fetcher, limit: int = 500, **_) -> Iterator[Product]:
         n = 0
-        for url, handle in self._pages():
+        # Sale collections come last: the same products may already be in the regular ones.
+        sales = self.sale_collections(fetcher) if self.collections else []
+        if sales:
+            log.info("[%s] sale collections: %s", self.name, ", ".join(sales))
+        for url, handle in self._pages(sales):
             try:
                 data = fetcher.get_json(url)
             except Exception as e:
