@@ -378,3 +378,24 @@ def test_sitemap_of_category_pages_seeds_the_site_walk():
     assert [(p.name, p.offers[0].price, p.category.value) for p in got] == [
         ("ASUS Zenbook 14 UM3406GA", 154999, "laptop")]
     assert "https://itti.com.np/about-itti-pvt-ltd" not in f.calls
+
+
+def test_category_pages_with_long_slugs_are_not_products():
+    """itti.com.np: /laptops-by-brands/dell/dell-precision-pro-max-laptops became a 'product'
+    ('DellPrecision/ProMaxLaptopsPriceinNepal') with a price taken from one of its cards."""
+    from devicescout.sources import GenericSource, SiteConfig
+
+    src = GenericSource(SiteConfig(name="itti", base_url="https://itti.com.np"))
+    for url in ("https://itti.com.np/laptops-by-brands/dell/dell-precision-pro-max-laptops",
+                "https://itti.com.np/gadgets/mobiles/blackview-smartphones-price-nepal"):
+        assert not src._looks_like_product(url), url
+    for url in ("https://itti.com.np/product/acer-nitro-vg271u-gaming-monitor-price-nepal",
+                "https://shop.com.np/mi-43-inch-a-series-2025", "https://hukut.com/samsung-galaxy-a57"):
+        assert src._looks_like_product(url), url
+
+    cards = "".join(f'<a href="/product/dell-pro-{i}-laptop-16gb">Dell {i}</a><p>Rs. {90000 + i},000</p>'
+                    for i in range(8))
+    listing = FakePage(f"<html><body><h1>Dell Laptops Price in Nepal</h1>{cards}</body></html>",
+                       "https://itti.com.np/some-dell-laptop-range-2026")
+    assert src._is_listing(listing)
+    assert src._product(FakeFetcher({}), listing.url, listing) is None

@@ -330,18 +330,30 @@ class GenericSource(Source):
             if product:
                 n += 1
                 yield product
+            else:
+                seeds.append(url)  # a category page after all: walk it for its products
         if n and not self.cfg.crawl_site:
             return
         # No usable product sitemap: walk the site, starting from the category pages it listed.
         for product in self._site_crawl(fetcher, limit - n, skip=done, seeds=seeds):
             yield product
 
+    def _is_listing(self, page) -> bool:
+        """Many product links and no product data of its own: a category page, whatever its URL."""
+        if extract_jsonld_product(page):
+            return False
+        host = urlparse(page.url).netloc
+        return sum(1 for u in self._links(page, host) if self._looks_like_product(u)) >= 6
+
     def _product(self, fetcher: Fetcher, url: str, page=None) -> Product | None:
         try:
             page = page or fetcher.get(url, mode=self.fetch_mode)
+            if self._is_listing(page):
+                return None
             product = self.parse(page)
             if product is None and self.fetch_mode != "dynamic" and _looks_like_js_shell(page):
-                product = self.parse(fetcher.get(url, mode="dynamic"))
+                rendered = fetcher.get(url, mode="dynamic")
+                product = None if self._is_listing(rendered) else self.parse(rendered)
                 if product:
                     self._browser_wins += 1
                     if self._browser_wins >= 2:     # this site's product pages need the browser
@@ -444,6 +456,14 @@ class GenericSource(Source):
                     "careers", "contact", "faq", "faqs", "warranty", "returns", "refund", "shipping",
                     "delivery", "locations", "branches", "login", "register", "account", "blog", "news"}
 
+    _FILLER = {"price", "prices", "in", "nepal", "np", "best", "buy", "online", "latest", "new", "2024", "2025",
+               "2026", "2027"}
+    _PLURALS = {"laptops", "notebooks", "phones", "smartphones", "mobiles", "tablets", "monitors", "watches",
+                "smartwatches", "earbuds", "headphones", "speakers", "cameras", "accessories", "desktops",
+                "computers", "printers", "routers", "chargers", "cables", "cases", "tvs", "televisions",
+                "consoles", "gadgets", "products", "deals", "offers", "brands", "collection",
+                "collections", "category", "categories"}
+
     def _looks_like_product(self, url: str) -> bool:
         # Product pages have a long, specific slug: /samsung-galaxy-a56-5g-8gb-256gb
         parts = urlparse(url).path.strip("/").split("/")
@@ -453,6 +473,10 @@ class GenericSource(Source):
                 and len(slug) >= 3 and not words & self._NOT_PRODUCT:
             return True                     # /product/<anything>: the store says it's a product
         if words & self._NOT_PRODUCT:       # /about-itti-pvt-ltd, /itti-terms-and-conditions
+            return False
+        # "/dell-pro-plus-laptops", "/blackview-smartphones-price-nepal": a list of laptops, not one.
+        meaningful = [w for w in re.split(r"[-_]+", slug.lower()) if w not in self._FILLER]
+        if meaningful and meaningful[-1] in self._PLURALS:
             return False
         looks_like_model = bool(re.search(r"\d", slug)) or len(slug.split("-")) >= 4
         return (len(slug) >= 10 and looks_like_model
