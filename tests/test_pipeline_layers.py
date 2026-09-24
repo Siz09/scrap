@@ -103,3 +103,12 @@ def test_source_status_comes_from_the_newer_of_check_and_update():
                    "check": "OK", "checked_at": "2026-09-24T12:00:00+00:00", "check_detail": "3 products"}
     assert _health(later_check) == later_check
     assert _health({"check": "RUNNING", "last_scraped_at": "x"})["check"] == "RUNNING"
+
+
+def test_restart_clears_updating_and_checking_flags():
+    from devicescout.jobs import _save_status, clear_interrupted, load_status
+    _save_status("gadgetbyte", scrape_running=True, last_scrape_count=87)
+    _save_status("itti", check="RUNNING")
+    clear_interrupted()
+    st = load_status()
+    assert st["gadgetbyte"] == {"scrape_running": False, "last_scrape_count": 87} and "check" not in st["itti"]

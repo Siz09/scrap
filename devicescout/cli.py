@@ -288,6 +288,8 @@ def cmd_schedule(args) -> None:
         signal.signal(sig, lambda *_: stop.set())
     store = open_store(args.db)
     store.fail_stale_jobs()
+    from .jobs import clear_interrupted
+    clear_interrupted()
     _import_legacy(store)
 
     def say(line: str) -> None:

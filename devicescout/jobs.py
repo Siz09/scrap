@@ -28,6 +28,21 @@ def load_status() -> dict:
         return {}
 
 
+def clear_interrupted() -> None:
+    """A restart (rebuild, crash) interrupts runs: don't leave sources showing "Updating…"
+    or "Checking…" forever."""
+    data = load_status()
+    changed = False
+    for st in data.values():
+        if st.get("scrape_running"):
+            st["scrape_running"], changed = False, True
+        if st.get("check") == "RUNNING":
+            st.pop("check")
+            changed = True
+    if changed:
+        source_status().write_text(json.dumps(data, indent=2))
+
+
 def _save_status(name: str, **fields) -> None:
     data = load_status()
     data[name] = {**data.get(name, {}), **fields}
@@ -301,6 +316,7 @@ class LocalWorker:
     def _loop(self) -> None:
         store = open_store(self.db_path)
         store.fail_stale_jobs()
+        clear_interrupted()
         while True:
             job = store.claim_job()
             if job:
