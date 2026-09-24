@@ -13,6 +13,8 @@ def isolated_home(tmp_path, monkeypatch):
     def offline(url, timeout=15):
         raise OSError("no network in tests")
     monkeypatch.setattr(currency, "_get_json", offline)
+    from devicescout.sources.base import Fetcher
+    monkeypatch.setattr(Fetcher, "_sleep", staticmethod(lambda seconds: None))   # 429 back-off: no real waits
     monkeypatch.setattr(currency, "RATES_TO_NPR", dict(currency.RATES_TO_NPR))
     monkeypatch.setattr(currency, "RATES_INFO", dict(currency.RATES_INFO))
 

@@ -16,6 +16,7 @@ from scrapling.parser import Selector
 
 from ..models import Offer, Product
 from ..normalize import categorize, clean_title, finalize, parse_label_lines, parse_price, parse_variant
+from .backends import RateLimited
 from .base import Fetcher, Source
 
 log = logging.getLogger(__name__)
@@ -63,6 +64,8 @@ class ShopifySource(Source):
         """Handles of the store's sale/festival collections, from /collections.json."""
         try:
             data = fetcher.get_json(f"{self.base}/collections.json?limit=250")
+        except RateLimited:
+            raise                    # the site limits us: stop it for this run
         except Exception as e:
             log.info("[%s] no collections list: %s", self.name, e)
             return []
@@ -121,6 +124,8 @@ class ShopifySource(Source):
                 url = f"{base_url}?limit={self.PAGE}&page={page}"
                 try:
                     data = fetcher.get_json(url)
+                except RateLimited:
+                    raise                    # the site limits us: stop it for this run
                 except Exception as e:
                     log.warning("[%s] %s: %s", self.name, url, e)
                     break
@@ -224,6 +229,8 @@ class WooCommerceSource(Source):
                 url = f"{self.api}/products?per_page=100&page={page}" + (f"&category={cat_id}" if cat_id else "")
                 try:
                     items = fetcher.get_json(url)
+                except RateLimited:
+                    raise                    # the site limits us: stop it for this run
                 except Exception as e:
                     log.warning("[%s] %s: %s", self.name, url, e)
                     break

@@ -57,6 +57,11 @@ class NotFound(Exception):
     """The page doesn't exist (404/410): trying other scrapers won't change that."""
 
 
+class RateLimited(RuntimeError):
+    """The site keeps answering 429 "too many requests". It limits this internet address, so
+    other scrapers won't get through either: the source stops for this run."""
+
+
 def _body_bytes(page) -> bytes:
     b = getattr(page, "body", b"")
     return b if isinstance(b, bytes) else str(b).encode()

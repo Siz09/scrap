@@ -22,7 +22,7 @@ from urllib.parse import urljoin, urlparse
 
 from ..models import Offer, Product
 from ..normalize import finalize, parse_label_lines, parse_price, parse_variant
-from .backends import NotFound
+from .backends import RateLimited, NotFound
 from .base import Fetcher, Source, _looks_like_js_shell, text_of
 
 log = logging.getLogger(__name__)
@@ -235,6 +235,8 @@ def sitemap_urls(fetcher: Fetcher, base_url: str, limit: int = 5000) -> Iterator
         robots = fetcher.get(root + "/robots.txt")
         queue += re.findall(r"(?im)^\s*sitemap:\s*(\S+)", robots.body.decode(errors="replace")
                             if isinstance(robots.body, bytes) else str(robots.body))
+    except RateLimited:
+        raise                    # the site limits us: stop it for this run
     except Exception as e:
         log.info("no robots.txt sitemap for %s: %s", root, e)
     queue += [root + p for p in ("/sitemap.xml", "/sitemap_index.xml", "/product-sitemap.xml", "/sitemap_products_1.xml")]
@@ -247,6 +249,8 @@ def sitemap_urls(fetcher: Fetcher, base_url: str, limit: int = 5000) -> Iterator
         seen_maps.add(sm)
         try:
             page = fetcher.get(sm)
+        except RateLimited:
+            raise                    # the site limits us: stop it for this run
         except Exception:
             continue
         body = page.body.decode(errors="replace") if isinstance(page.body, bytes) else str(page.body)
@@ -364,6 +368,8 @@ class GenericSource(Source):
             return product
         except NotFound:
             return None
+        except RateLimited:
+            raise                    # the site limits us: stop it for this run
         except Exception as e:
             log.warning("[%s] failed %s: %s", self.name, url, e)
             return None
@@ -410,6 +416,8 @@ class GenericSource(Source):
                     walked += 1
             except NotFound:
                 continue
+            except RateLimited:
+                raise                    # the site limits us: stop it for this run
             except Exception as e:
                 log.info("[%s] %s: %s", self.name, url, e)
                 continue
@@ -531,6 +539,8 @@ class GenericSource(Source):
         if not products:
             try:
                 rendered = fetcher.get(url, mode="dynamic", scroll=True)
+            except RateLimited:
+                raise                    # the site limits us: stop it for this run
             except Exception as e:
                 log.info("[%s] browser render failed for %s: %s", self.name, url, e)
                 return page
@@ -552,6 +562,8 @@ class GenericSource(Source):
             url = queue.pop(0)
             try:
                 page = self._page(fetcher, url)
+            except RateLimited:
+                raise                    # the site limits us: stop it for this run
             except Exception as e:
                 log.info("[%s] %s: %s", self.name, url, e)
                 continue

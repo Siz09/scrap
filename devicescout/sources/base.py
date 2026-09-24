@@ -9,7 +9,8 @@ from collections.abc import Iterator
 from urllib.parse import urlparse
 
 from ..models import Product
-from .backends import FetchedPage, NotFound, UrllibHTTP, block_reason, build_backends, json_from_rendered
+from .backends import (FetchedPage, NotFound, RateLimited, UrllibHTTP, block_reason, build_backends,
+                       json_from_rendered)
 
 log = logging.getLogger(__name__)
 
@@ -137,10 +138,10 @@ class Fetcher:
         elif not fallback:
             chain = chain[:1]
         for backend in chain:
-            self._throttle(url)
             try:
-                page = (backend.fetch(url, headers or {}, scroll=True) if scroll and backend.name in _SCROLLERS
-                        else backend.fetch(url, headers or {}))
+                page = self._fetch_patiently(backend, url, headers or {}, scroll and backend.name in _SCROLLERS)
+            except RateLimited:
+                raise
             except Exception as e:
                 self._count(backend.name, "error")
                 reasons.append(f"{backend.name}: {type(e).__name__}: {str(e)[:80]}")
@@ -176,6 +177,33 @@ class Fetcher:
             return page
         raise RuntimeError(f"all scrapers failed for {url}: " + "; ".join(reasons or ["no backend available"]))
 
+    # Waits after a 429 before retrying (unless the site says how long in Retry-After).
+    backoff: tuple[float, ...] = (30, 90, 240)
+
+    def _fetch_patiently(self, backend, url: str, headers: dict, scroll: bool):
+        """One scraper, one page. On 429 "too many requests": wait, slow down for this site for
+        the rest of the run, and retry the same scraper. Switching scrapers doesn't help: the
+        limit is on this internet address, and extra requests only prolong it."""
+        host = urlparse(url).netloc
+        for attempt in range(len(self.backoff) + 1):
+            self._throttle(url)
+            page = backend.fetch(url, headers, scroll=True) if scroll else backend.fetch(url, headers)
+            if getattr(page, "status", 200) != 429:
+                return page
+            self._count(backend.name, "blocked")
+            if attempt == len(self.backoff):
+                break
+            wait = _retry_after(page) or self.backoff[attempt]
+            self.host_delay[host] = min(max(self.host_delay.get(host, 0), self.delay) * 2, 30)
+            log.warning("%s: 429 too many requests; waiting %.0f s, then one request every %.0f s",
+                        host, wait, self.host_delay[host])
+            self._sleep(wait)
+        raise RateLimited(f"{host} keeps answering 429 (too many requests); stopping it for this run")
+
+    @staticmethod
+    def _sleep(seconds: float) -> None:
+        time.sleep(seconds)
+
     def get_json(self, url: str, headers: dict[str, str] | None = None, fallback: bool | str = True):
         page = self.get(url, headers={"Accept": "application/json, text/plain, */*", **(headers or {})},
                         want_json=True, fallback=fallback)
@@ -191,6 +219,15 @@ class Fetcher:
 
 
 _SCROLLERS = {"scrapling-dynamic", "scrapling-stealth"}
+
+
+def _retry_after(page) -> float | None:
+    """Seconds from a Retry-After header (capped at 10 minutes)."""
+    try:
+        headers = {str(k).lower(): v for k, v in dict(getattr(page, "headers", None) or {}).items()}
+        return min(float(headers["retry-after"]), 600) if "retry-after" in headers else None
+    except (TypeError, ValueError):
+        return None
 
 
 class _UrllibSession:
@@ -227,6 +264,8 @@ class Source:
                 product = self.parse(page)
                 if product is None and self.fetch_mode != "dynamic" and _looks_like_js_shell(page):
                     product = self.parse(fetcher.get(url, mode="dynamic"))
+            except RateLimited:
+                raise                    # the site limits us: stop it for this run
             except Exception as e:
                 log.warning("[%s] failed %s: %s", self.name, url, e)
                 continue

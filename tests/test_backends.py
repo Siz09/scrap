@@ -88,8 +88,8 @@ def test_crashing_browser_is_disabled_for_the_run():
 
 
 def test_all_blocked_reports_every_reason():
-    f = fetcher(Scripted("a", [(429, b"slow down")]), Scripted("b", [(503, b"x")]))
-    with pytest.raises(RuntimeError, match=r"a: HTTP 429; b: HTTP 503"):
+    f = fetcher(Scripted("a", [(403, b"denied")]), Scripted("b", [(503, b"x")]))
+    with pytest.raises(RuntimeError, match=r"a: HTTP 403; b: HTTP 503"):
         f.get("https://x.com.np/")
 
 
@@ -111,3 +111,29 @@ def test_asking_for_a_browser_gets_a_browser_even_after_http_worked():
     assert (http.calls, chrome.calls) == (1, 1)
     f.get("https://hukut.com/some-phone-12gb")        # plain requests still use the fast scraper
     assert (http.calls, chrome.calls) == (2, 1)
+
+
+
+def test_429_waits_and_retries_the_same_scraper_instead_of_trying_others():
+    """gsmarena.com: after a 429 every other scraper (browsers too) was tried, adding requests
+    from the same address. Now: wait, slow down for that site, retry the same scraper."""
+    http = Scripted("scrapling-http", [(429, b"slow down"), (200, PRODUCT_HTML)])
+    chrome = Scripted("scrapling-dynamic", [(200, PRODUCT_HTML)], browser=True)
+    f = fetcher(http, chrome)
+    f.delay = 2
+    waits = []
+    f._sleep = waits.append
+    f._throttle = lambda url: None
+    assert f.get("https://www.gsmarena.com/apple-phones-48.php").css("h1::text").get() == "Phone"
+    assert (http.calls, chrome.calls) == (2, 0)
+    assert waits == [30] and f.host_delay["www.gsmarena.com"] == 4      # delay doubled for the rest of the run
+
+
+def test_persistent_429_stops_the_site_for_this_run():
+    from devicescout.sources.backends import RateLimited
+    http = Scripted("scrapling-http", [(429, b"slow down")])
+    chrome = Scripted("scrapling-dynamic", [(200, PRODUCT_HTML)], browser=True)
+    f = fetcher(http, chrome)
+    with pytest.raises(RateLimited):
+        f.get("https://www.gsmarena.com/x.php")
+    assert http.calls == 4 and chrome.calls == 0      # first try + 3 waits, never the browser
