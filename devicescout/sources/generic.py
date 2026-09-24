@@ -285,7 +285,7 @@ class GenericSource(Source):
         seen: set[str] = set()
         if not self.cfg.product_link_css:
             for u in sitemap_urls(fetcher, self._base()):
-                if u not in seen and self._wanted(u):
+                if u not in seen and self._wanted(u) and self._looks_like_product(u):
                     seen.add(u)
                     yield u
             if not seen:
@@ -315,20 +315,25 @@ class GenericSource(Source):
             yield from super().crawl(fetcher, limit, **opts)
             return
         done: set[str] = set()
+        seeds: list[str] = []      # sitemap entries that are category / brand pages, not products
         n = 0
         for url in sitemap_urls(fetcher, self._base()):
             if n >= limit:
                 return
             if url in done or not self._wanted(url):
                 continue
+            if not self._looks_like_product(url):
+                seeds.append(url)  # itti's sitemap: /laptops-by-brands/asus-laptop-nepal/zenbook-series
+                continue
             done.add(url)
             product = self._product(fetcher, url)
             if product:
                 n += 1
                 yield product
-        if done and not self.cfg.crawl_site:
+        if n and not self.cfg.crawl_site:
             return
-        for product in self._site_crawl(fetcher, limit - n, skip=done):
+        # No usable product sitemap: walk the site, starting from the category pages it listed.
+        for product in self._site_crawl(fetcher, limit - n, skip=done, seeds=seeds):
             yield product
 
     def _product(self, fetcher: Fetcher, url: str, page=None) -> Product | None:
@@ -363,11 +368,12 @@ class GenericSource(Source):
         path = u.path.rstrip("/") or "/"
         return f"{u.scheme}://{u.netloc}{path}" + (f"?{query}" if query else "")
 
-    def _site_crawl(self, fetcher: Fetcher, limit: int, skip: set[str] = frozenset()) -> Iterator[Product]:
+    def _site_crawl(self, fetcher: Fetcher, limit: int, skip: set[str] = frozenset(),
+                    seeds: list[str] = ()) -> Iterator[Product]:
         from collections import deque
         host = urlparse(self._base()).netloc
         listings = deque(dict.fromkeys(self._canonical(u, False)
-                                       for u in [*self.cfg.start_urls, self._base()] if u))
+                                       for u in [*self.cfg.start_urls, *seeds, self._base()] if u))
         products: deque[str] = deque()
         queued = set(listings) | set(skip)
         walked = n = 0
@@ -390,7 +396,7 @@ class GenericSource(Source):
             except Exception as e:
                 log.info("[%s] %s: %s", self.name, url, e)
                 continue
-            if is_product:
+            if is_product or extract_jsonld_product(page):   # a product with a short URL (/iphone-air)
                 product = self._product(fetcher, url, page)
                 if product:
                     n += 1
@@ -407,6 +413,9 @@ class GenericSource(Source):
                             self._hints[link] = listing_path.replace("-", " ").replace("/", " ")
                 else:
                     link = self._canonical(link, False)
+                    slug_words = set(re.split(r"[-_/]+", urlparse(link).path.lower()))
+                    if slug_words & self._NOT_PRODUCT:
+                        continue            # about / terms / contact pages lead nowhere useful
                     if link not in queued:
                         queued.add(link)
                         # Pagination and category pages first, so products start flowing early.
@@ -437,8 +446,12 @@ class GenericSource(Source):
 
     def _looks_like_product(self, url: str) -> bool:
         # Product pages have a long, specific slug: /samsung-galaxy-a56-5g-8gb-256gb
-        slug = urlparse(url).path.strip("/").split("/")[-1]
+        parts = urlparse(url).path.strip("/").split("/")
+        slug = parts[-1]
         words = set(re.split(r"[-_]+", slug.lower()))
+        if len(parts) >= 2 and parts[-2].lower() in ("product", "products", "p", "item", "product-detail") \
+                and len(slug) >= 3 and not words & self._NOT_PRODUCT:
+            return True                     # /product/<anything>: the store says it's a product
         if words & self._NOT_PRODUCT:       # /about-itti-pvt-ltd, /itti-terms-and-conditions
             return False
         looks_like_model = bool(re.search(r"\d", slug)) or len(slug.split("-")) >= 4
@@ -656,6 +669,8 @@ class GenericSource(Source):
             offers = variant_offers      # one price per storage/colour option (ProductGroup)
         if not ld and not offers and not specs and len(raw) < 3:
             return None   # a category, article or landing page, not a product
+        if not ld and not offers and self.cfg.region == "np":
+            return None   # a shop page with neither product data nor a price: a category or info page
         product = Product(
             source=self.name,
             url=page.url,

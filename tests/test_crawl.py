@@ -340,3 +340,41 @@ def test_js_shell_and_non_product_pages_are_recognised():
     assert src._looks_like_product("https://itti.com.np/product/asus-zenbook-14-um3406ga-price-nepal")
     assert not src._looks_like_product("https://itti.com.np/about-itti-pvt-ltd")
     assert not src._looks_like_product("https://itti.com.np/itti-terms-and-conditions")
+
+
+def test_sitemap_of_category_pages_seeds_the_site_walk():
+    """itti.com.np: the sitemap lists category pages; products live under /product/..."""
+    from devicescout.sources import GenericSource, SiteConfig
+
+    sitemap = ('<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+               '<url><loc>https://itti.com.np/laptops-by-brands/asus-laptop-nepal</loc></url>'
+               '<url><loc>https://itti.com.np/laptops-by-brands/asus-laptop-nepal/zenbook-series</loc></url></urlset>')
+    ld = json.dumps({"@type": "Product", "name": "ASUS Zenbook 14 UM3406GA",
+                     "offers": {"price": "154999", "priceCurrency": "NPR"}})
+    product = f'<html><head><script type="application/ld+json">{ld}</script></head><body><h1>x</h1></body></html>'
+    routes = {
+        "itti.com.np/sitemap.xml": sitemap,
+        "itti.com.np/laptops-by-brands/asus-laptop-nepal/zenbook-series":
+            '<html><body><h1>Laptop price in Nepal 2026</h1>'
+            '<a href="/product/asus-zenbook-14-um3406ga-price-nepal">Zenbook</a>'
+            '<a href="/about-itti-pvt-ltd">About</a></body></html>',
+        "itti.com.np/laptops-by-brands/asus-laptop-nepal": '<html><body><h1>ASUS</h1>'
+            '<p>Processor: Ryzen 7</p><p>RAM: 16GB</p><p>Storage: 1TB SSD</p></body></html>',
+        "itti.com.np/product/asus-zenbook-14-um3406ga-price-nepal": product,
+    }
+
+    class Itti(FakeFetcher):
+        def _match(self, url):
+            self.calls.append(url)
+            for needle in sorted(routes, key=len, reverse=True):
+                if url.rstrip("/").endswith(needle):
+                    return routes[needle]
+            if url.rstrip("/") == "https://itti.com.np":
+                return "<html><body></body></html>"
+            raise RuntimeError(f"HTTP 404 for {url}")
+
+    f = Itti({})
+    got = list(GenericSource(SiteConfig(name="itti", base_url="https://itti.com.np")).crawl(f, limit=10))
+    assert [(p.name, p.offers[0].price, p.category.value) for p in got] == [
+        ("ASUS Zenbook 14 UM3406GA", 154999, "laptop")]
+    assert "https://itti.com.np/about-itti-pvt-ltd" not in f.calls
