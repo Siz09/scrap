@@ -34,7 +34,7 @@ Then open http://localhost:8765. Everything listens on `127.0.0.1` only, so noth
   - Crawl4AI.
 
   Firecrawl turns on if you set `FIRECRAWL_API_KEY`; it's a paid hosted service.
-- **db** (`postgres:17`): all the data, in three layers (see [Data layers](#data-layers)). Open it with any PostgreSQL tool (DBeaver, pgAdmin, `psql`) at `localhost:5433`, database and user `devicescout`, password `devicescout` (change it with `POSTGRES_PASSWORD` in `.env` before the first start).
+- **db** (`postgres:17`): all the data, in three layers (see [Data layers](#data-layers)). Open it with any PostgreSQL tool (DBeaver, pgAdmin, `psql`) at `localhost:55432`, database and user `devicescout`, password `devicescout` (change it with `POSTGRES_PASSWORD` in `.env` before the first start).
 
 If you ran an earlier version, the scraper copies what the old SQLite database collected into PostgreSQL on its first start.
 
