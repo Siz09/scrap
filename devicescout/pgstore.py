@@ -404,6 +404,12 @@ class PgStore(Store):
                    status = excluded.status, scraper = excluded.scraper""",
             (source, url, status, scraper, content_type, hashlib.sha1(body.encode()).hexdigest(), body))
 
+    def pages_since(self, source: str, since: str) -> set[str]:
+        """URLs of this website's pages fetched at or after `since` (resuming an interrupted run)."""
+        rows = self.pg.execute("SELECT DISTINCT url FROM raw.pages WHERE source = %s AND last_seen_at >= %s",
+                               (source, since)).fetchall()
+        return {r["url"] for r in rows}
+
     def raw_records(self):
         last = ("", 0)
         while True:      # keyset pages: the raw layer can be far bigger than memory

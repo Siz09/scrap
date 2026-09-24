@@ -412,3 +412,72 @@ def test_category_pages_with_long_slugs_are_not_products():
                        "https://itti.com.np/some-dell-laptop-range-2026")
     assert src._is_listing(listing)
     assert src._product(FakeFetcher({}), listing.url, listing) is None
+
+
+def test_full_run_cut_short_continues_where_it_stopped(tmp_path, monkeypatch):
+    import threading
+
+    from devicescout import jobs
+    from devicescout.models import Category, Offer, Product
+
+    ran: list[str] = []
+    cancel = threading.Event()
+
+    def fake_crawl(entry, fetcher, limit, **kw):
+        ran.append(entry["name"])
+        if entry["name"] == "b" and not kw.get("_again"):
+            cancel.set()                       # the container restarts while b is being scraped
+        yield Product(source=entry["name"], url=f"https://{entry['name']}/p", name=f"Phone {entry['name'].upper()}1",
+                      brand="X", category=Category.PHONE,
+                      offers=[Offer(entry["name"], "https://x", 20000, "NPR")])
+
+    class F:
+        def __init__(self, **_): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+
+    monkeypatch.setattr(jobs, "crawl_entry", fake_crawl)
+    monkeypatch.setattr(jobs, "refresh_rates", lambda *a, **k: None)
+    db = tmp_path / "t.db"
+    entries = [{"name": n} for n in ("a", "b", "c")]
+    jobs.run_scrape(entries, db, log=lambda _: None, fetcher_factory=F, cancel=cancel, resume=True)
+    assert ran == ["a", "b"]
+    ran.clear()
+    jobs.run_scrape(entries, db, log=lambda _: None, fetcher_factory=F, cancel=threading.Event(), resume=True)
+    assert ran == ["b", "c"]                   # a was finished: not scraped again
+    ran.clear()
+    jobs.run_scrape(entries, db, log=lambda _: None, fetcher_factory=F, cancel=threading.Event(), resume=True)
+    assert ran == ["a", "b", "c"]              # the run completed, so the next one starts at the top
+
+
+def test_quiet_job_still_heartbeats_and_notices_stop(tmp_path, monkeypatch):
+    """A site walked in a browser can go many minutes without a log line: the website must
+    still see the scraper alive, and Stop must still work."""
+    import time as _t
+
+    from devicescout import jobs
+    from devicescout.storage import open_store
+
+    monkeypatch.setattr(jobs, "WATCH_SECONDS", 0.05)
+    db = tmp_path / "t.db"
+    src = tmp_path / "sources.json"
+    src.write_text('{"sources": [{"name": "slow", "type": "jsonld", "base_url": "https://slow.example"}]}')
+    store = open_store(db)
+    job = store.enqueue_job("scrape", ["slow"], 0, origin="web")
+    store.claim_job(job_id=job["id"])
+    seen = {}
+
+    def quiet_scrape(entries, db_path, cancel=None, **kw):
+        s = open_store(db_path)
+        s.request_cancel(job["id"])            # the user presses Stop while nothing is printed
+        for _ in range(100):
+            if cancel.is_set():
+                break
+            _t.sleep(0.02)
+        seen["cancelled"] = cancel.is_set()
+        seen["heartbeat"] = s.get_kv("worker_heartbeat")
+        return {}
+
+    monkeypatch.setattr(jobs, "run_scrape", quiet_scrape)
+    assert jobs.execute(store.job(job["id"]), db, src) == "cancelled"
+    assert seen["cancelled"] and seen["heartbeat"]

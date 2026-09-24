@@ -109,6 +109,11 @@ cd web && npm run build                     # typecheck + build into devicescout
 - Sources are scraped **top to bottom in `sources.json` order** (`scrape_order` keeps the list order).
 - On start, the scraper marks jobs left "running" as failed, clears stale flags, and cancels scheduled
   jobs still waiting from the previous container.
+- **Full runs resume after a restart** (`run_scrape(resume=True)`, kv `scrape_cycle`): sites finished in the
+  run are skipped, and the site it was on skips product pages already fetched in the run (`pages_since`,
+  `GenericSource.skip_urls`). A completed run clears the cycle; one older than 48 h starts over.
+- While a job runs, a watcher thread (every `WATCH_SECONDS`=20) writes the heartbeat and checks Stop, so a
+  quiet browser walk (Hukut) no longer shows "scraper isn't running" and Stop works mid-site.
 - `run_scrape` also refreshes exchange rates.
 
 **Prices**
