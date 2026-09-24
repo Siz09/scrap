@@ -59,7 +59,18 @@ def test_shopify_crawl_stops_at_empty_page():
     src = ShopifySource(name="shop", base_url="https://shop.com.np", collections=["phones"], max_pages=5)
     products = list(src.crawl(f))
     assert [p.name for p in products] == ["Samsung Galaxy A56 5G", "Spigen Tough Armor Case for Galaxy A56"]
-    assert all("/collections/phones/products.json" in u or "/collections.json" in u for u in f.calls)
+    assert "https://shop.com.np/products.json?limit=250&page=1" in f.calls   # the whole store first
+    assert not any("page=2" in u for u in f.calls)       # a short page is the last one: no extra requests
+
+
+def test_shopify_stops_when_the_store_repeats_the_same_page():
+    """brother-mart: every collection was read to page 10 because pages kept coming back full."""
+    shop = fixture("shopify_products.json")
+    f = FakeFetcher({"products.json": shop})           # every page returns the same products
+    src = ShopifySource(name="shop", base_url="https://shop.com.np", max_pages=50)
+    src.PAGE = len(shop["products"])                    # so each page looks "full"
+    assert len(list(src.crawl(f))) == len(shop["products"])
+    assert sum("products.json" in u for u in f.calls) == 2   # page 1, then page 2 = same ids: stop
 
 
 def test_shopify_also_crawls_sale_and_festival_collections():

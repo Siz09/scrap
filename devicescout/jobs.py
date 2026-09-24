@@ -236,6 +236,7 @@ def execute(job: dict, db_path, sources_path, fetcher_factory=Fetcher) -> str:
         if store.job(job["id"])["cancel_requested"]:
             cancel.set()
         store.job_log(job["id"], f"{time.strftime('%H:%M:%S')} {line}")
+        print(f"{time.strftime('%Y-%m-%d %H:%M:%S')}   {line}", flush=True)   # docker compose logs
         alive()
 
     def progress(**p) -> None:
