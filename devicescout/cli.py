@@ -481,6 +481,28 @@ def _inspect_specs(src, page, blobs) -> None:
               + (f"; around 'battery': {' '.join(body[max(0, i - 200):i + 200].split())!r}" if i >= 0 else ""))
 
 
+def cmd_duplicates(args) -> None:
+    """Cards that are probably the same device listed twice, for fixing the matching rules."""
+    from collections import defaultdict
+
+    from .normalize import likely_same
+    store = open_store(args.db)
+    by_cat: dict[str, list] = defaultdict(list)
+    for p in store.products():
+        by_cat[p.category.value].append(p)
+    found = 0
+    for cat, items in sorted(by_cat.items()):
+        items.sort(key=lambda p: p.key or "")
+        for i, a in enumerate(items):
+            for b in items[i + 1:]:
+                if not (b.key or "").startswith((a.key or "").split(" ")[0]):
+                    break                       # sorted by key: past this brand
+                if likely_same(a.key or "", b.key or ""):
+                    found += 1
+                    print(f"{cat:<11} {a.name!r} ({a.key})\n{'':<11} {b.name!r} ({b.key})\n")
+    print(f"{found} likely duplicate pair(s)." + ("" if found else " Cards look distinct."))
+
+
 def cmd_scrapers(args) -> None:
     """List the fallback chain; with --test URL, fetch that page through each scraper separately."""
     import time
@@ -633,6 +655,9 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("url")
     s.add_argument("--show", type=int, default=8, help="example links to print")
     s.set_defaults(func=cmd_inspect)
+
+    s = sub.add_parser("duplicates", help="cards that are probably the same device listed twice")
+    s.set_defaults(func=cmd_duplicates)
 
     s = sub.add_parser("raw", help="what the raw layer holds per website (pages fetched, records parsed)")
     s.set_defaults(func=cmd_raw)

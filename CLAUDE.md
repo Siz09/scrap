@@ -78,13 +78,21 @@ cd web && npm run build                     # typecheck + build into devicescout
 - `ops.jobs` and `ops.kv`.
 - Extensions: pg_trgm, unaccent, btree_gin, pg_stat_statements. `SCHEMA_VERSION` "5".
 
-**Matching one model across sites** (`normalize.canonical_key(brand, name, category)`)
-- Drops storage/colour/"5G"/warranty noise from the title.
-- For phones, tablets and watches it also cuts the sales pitch after the model (`model_name`: from the first
-  "mAh / MP / inch / Snapdragon / Triple Camera / Features and Specs" onwards), and splits "CE5" into "CE 5".
-- Other categories keep their numbers, because there the numbers are the model (power banks).
-- A merged card keeps the plainest title. After changing these rules, run `devicescout reprocess` to rebuild
-  the catalogue from raw records; nothing needs scraping again.
+**Matching one model across sites** (`normalize.model_name`, `canonical_key(brand, name, category)`)
+- **`model_name`** cleans a store title into the card name, for every device: listing tails and ® ™ go.
+  For phones, tablets and watches it also cuts everything after the model, at the first bracket, comma,
+  " - ", or spec/pitch word (mAh, MP, inch/", Snapdragon, Dimensity, AMOLED, Triple/Main Camera,
+  Android 15, "Features and Specs", "with …"). It also drops a trailing "Smartphone"/"Mobile".
+  "(2024)" years are kept.
+- **`canonical_key`** is the merge key.
+  - Removes RAM/storage, colours, 4G/5G and warranty text.
+  - "+" becomes "plus", so S24+ stays apart from the S24.
+  - Glued series numbers are split ("CE5", "iPhone16", "HOT60" become "CE 5", "iPhone 16", "HOT 60").
+  - Sub-brands own the key ("Xiaomi Redmi Note 14" = "Redmi Note 14").
+  - Family names imply the brand when it's missing (Galaxy → samsung, iPhone → apple).
+- Other categories keep their numbers (power banks), and laptop configs aren't merged.
+- **`devicescout duplicates`** lists cards that probably still are one device (`likely_same`), for tuning.
+- After changing rules, run `devicescout reprocess` (rebuilds cards from raw records; no scraping needed).
 
 **Jobs** (`jobs.py`, `cli.py cmd_schedule`)
 - **One job at a time, one website at a time** (owner's request). The scheduled run and the Check/Update

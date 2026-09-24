@@ -52,7 +52,7 @@ def test_label_lines_from_descriptions():
 
 def test_canonical_key_handles_marketplace_titles():
     k = canonical_key("Xiaomi", "Redmi Note 14 Pro 5G (8GB/256GB) - 1 Year Official Warranty")
-    assert k == canonical_key("Xiaomi", "Redmi Note 14 Pro 5G 8/256") == "xiaomi redmi note 14 pro"
+    assert k == canonical_key("Xiaomi", "Redmi Note 14 Pro 5G 8/256") == "redmi note 14 pro"
     assert canonical_key("Samsung", "Samsung Galaxy A56 5G Price in Nepal, Specs & Availability") == \
         canonical_key("Samsung", "Samsung Galaxy A56") == "samsung galaxy a56"
 

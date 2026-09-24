@@ -198,3 +198,34 @@ def test_empty_or_bad_rates_env_does_not_crash():
         finally:
             del os.environ["DEVICESCOUT_RATES"]
     importlib.reload(cur)
+
+
+@pytest.mark.parametrize("titles", [
+    [("Samsung", "Samsung Galaxy A56 5G"), ("Samsung", "Samsung Galaxy A56 5G (8GB/256GB) - 1 Year Warranty"),
+     ("Samsung", 'Galaxy A56 6.7" Super AMOLED, 50MP Camera'), (None, "Galaxy A56")],
+    [("Xiaomi", "Xiaomi Redmi Note 14 Pro 5G"), ("Redmi", "Redmi Note 14 Pro (8/256)"),
+     ("Xiaomi", "Redmi Note14 Pro MediaTek Dimensity 7300 Ultra")],
+    [("Apple", "Apple iPhone 16 Pro Max 256GB Desert Titanium"), ("Apple", "iPhone16 Pro Max"), (None, "iPhone 16 Pro Max")],
+    [("Infinix", "Infinix HOT 60 Pro Plus, 50MP Camera, Android 15 Smartphone"), ("Infinix", "Infinix Hot 60 Pro+"),
+     ("Infinix", "Infinix HOT60 Pro+ 8+256GB")],
+    [("Samsung", "Samsung Galaxy S25 Ultra AI Smartphone"), ("Samsung", "Samsung Galaxy S25 Ultra")],
+    [("vivo", "Vivo Y29 4G"), ("vivo", "vivo Y29 (6GB+128GB) Mobile Phone")],
+    [("Realme", "Realme 14 Pro+ 5G"), ("Realme", "realme 14 Pro Plus 5G 12/512")],
+])
+def test_one_key_per_model_across_brands_and_title_styles(titles):
+    assert len({canonical_key(b, n, Category.PHONE) for b, n in titles}) == 1
+
+
+def test_different_models_keep_different_keys():
+    names = ["Samsung Galaxy S24", "Samsung Galaxy S24+", "Samsung Galaxy S24 Ultra", "Samsung Galaxy S24 FE",
+             "Motorola Moto G (2024)", "Motorola Moto G (2025)", "Apple iPhone 16", "Apple iPhone 16 Plus",
+             "Apple iPhone 16e", "OnePlus 12", "OnePlus 12R", "Koshi K5 Camera"]
+    keys = [canonical_key(n.split()[0], n, Category.PHONE) for n in names]
+    assert len(set(keys)) == len(keys)
+
+
+def test_likely_same_flags_leftovers_but_not_other_models():
+    from devicescout.normalize import likely_same
+    assert likely_same("samsung galaxy a56", "samsung galaxy a56 awesome edition")
+    assert not likely_same("samsung galaxy s24", "samsung galaxy s24 ultra")
+    assert not likely_same("apple iphone 16", "apple iphone 16 pro max")
