@@ -196,7 +196,7 @@ def normalize_specs(raw: dict[str, str], category: Category) -> dict[str, Any]:
                 specs["has_gps"] = not re.match(r"\s*(no|none)\b", v, re.I)
             elif re.search(r"\bGPS\b", v):
                 specs["has_gps"] = True
-        elif _match(label, "os") and "os" not in specs:
+        elif _match(label, "os") and "os" not in specs and not _match(label, "chipset") and not _match(label, "gpu"):
             if (os_name := parse_os(v)):
                 specs["os"] = os_name
             if (n := parse_os_upgrades(v)):
