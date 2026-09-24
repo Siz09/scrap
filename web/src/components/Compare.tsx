@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { api, type ProductDetail } from "../api";
 import { useApp } from "../context";
-import { formatSpec, LOWER_IS_BETTER, NO_BEST, npr } from "../format";
+import { formatSpec, LOWER_IS_BETTER, NO_BEST } from "../format";
+import PriceTag from "./PriceTag";
 
 export default function Compare() {
   const { meta, compare, toggleCompare } = useApp();
@@ -55,9 +56,12 @@ export default function Compare() {
           </thead>
           <tbody>
             <tr className="price-row">
-              <th scope="row">Price in Nepal</th>
+              <th scope="row">Price</th>
               {items.map((p) => (
-                <td key={p.key} className={p.best_price === cheapest ? "best" : ""}>{npr(p.best_price)}</td>
+                <td key={p.key} className={p.best_price != null && p.best_price === cheapest ? "best" : ""}>
+                  <PriceTag local={p.best_price} converted={p.converted_price} from={p.converted_from}
+                            available={p.available_in_nepal} />
+                </td>
               ))}
             </tr>
             <tr>

@@ -7,7 +7,8 @@ import PickCard from "./PickCard";
 type MustState = Record<string, number | boolean>;
 
 const EXCLUDED_LABELS: Record<string, string> = {
-  no_nepal_price: "no price in Nepal yet",
+  no_nepal_price: "not sold in Nepal",
+  no_price: "with no price yet (can't check the budget)",
   over_budget: "over budget",
   under_min_budget: "under your minimum",
   os: "other OS",
@@ -32,6 +33,7 @@ export default function Advisor() {
   const [query, setQuery] = useState("");
   const [understood, setUnderstood] = useState<string[] | null>(null);
   const [inStock, setInStock] = useState(false);
+  const [nepalOnly, setNepalOnly] = useState(false);
 
   const [advice, setAdvice] = useState<Advice | null>(null);
   const [loading, setLoading] = useState(false);
@@ -90,9 +92,9 @@ export default function Advisor() {
       category: cat.id, budget_min: budgetMin, budget_max: budgetMax,
       uses: uses.length ? weighted : { balanced: 1 }, os, must,
       brands, exclude_brands: excludeBrands,
-      official_only: officialOnly, in_stock_only: inStock, top: 5,
+      official_only: officialOnly, in_stock_only: inStock, nepal_only: nepalOnly, top: 5,
     };
-  }, [cat, budgetMin, budgetMax, uses, os, musts, brands, excludeBrands, officialOnly, inStock]);
+  }, [cat, budgetMin, budgetMax, uses, os, musts, brands, excludeBrands, officialOnly, inStock, nepalOnly]);
 
   useEffect(() => {
     if (budgetInvalid) return;
@@ -243,6 +245,10 @@ export default function Advisor() {
             <input type="checkbox" checked={inStock} onChange={(e) => setInStock(e.target.checked)} />
             Only in stock
           </label>
+          <label className="check">
+            <input type="checkbox" checked={nepalOnly} onChange={(e) => setNepalOnly(e.target.checked)} />
+            Only sold in Nepal <span className="muted">(hide devices priced only abroad)</span>
+          </label>
         </fieldset>
       </section>
 
@@ -268,28 +274,40 @@ export default function Advisor() {
 
             {advice.picks.length === 0 && (
               <div className="empty">
-                <p>Nothing fits every requirement. Try raising the budget, removing a must-have, or allowing any OS.</p>
+                {(advice.excluded.no_price ?? 0) > 0 && advice.considered === 0 ? (
+                  <p>
+                    {advice.excluded.no_price} {cat.label.toLowerCase()} have specs but no price anywhere yet, so they can't
+                    be checked against a budget. Clear the budget to see them, or wait for the scraper to reach more
+                    stores (<a href="#/sources">Data sources</a>).
+                  </p>
+                ) : (
+                  <p>Nothing fits every requirement. Try raising the budget, removing a must-have, or allowing any OS.</p>
+                )}
               </div>
             )}
 
-            <ol className="picks">
-              {advice.picks.map((p, i) => (
-                <li key={p.key}><PickCard pick={p} rank={i + 1} /></li>
-              ))}
-            </ol>
+            {advice.picks.length > 0 && (
+              <ol className="picks">
+                {advice.picks.map((p, i) => (
+                  <li key={p.key}><PickCard pick={p} rank={i + 1} /></li>
+                ))}
+              </ol>
+            )}
 
             {advice.value_pick && (
               <div className="special">
                 <h3>Save money</h3>
                 <p className="muted">Nearly as good as #1 for less.</p>
-                <PickCard pick={advice.value_pick} tone="value" savings={(advice.picks[0]?.price_npr ?? 0) - advice.value_pick.price_npr} />
+                <PickCard pick={advice.value_pick} tone="value"
+                          savings={advice.picks[0]?.price_npr != null && advice.value_pick.price_npr != null && !advice.picks[0].price_converted
+                            ? advice.picks[0].price_npr - advice.value_pick.price_npr : undefined} />
               </div>
             )}
             {advice.stretch_pick && (
               <div className="special">
                 <h3>Worth stretching?</h3>
                 <p className="muted">
-                  {budgetMax ? `${npr(advice.stretch_pick.price_npr - budgetMax)} over your budget, ` : ""}
+                  {budgetMax && advice.stretch_pick.price_npr != null ? `${npr(advice.stretch_pick.price_npr - budgetMax)} over your budget, ` : ""}
                   but clearly better for what you asked for.
                 </p>
                 <PickCard pick={advice.stretch_pick} tone="stretch" />

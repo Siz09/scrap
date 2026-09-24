@@ -32,6 +32,7 @@ from .sample import build_sample
 from .sources import load_entries
 from .sources.detect import cached_platform
 from .specmeta import meta as spec_meta
+from .currency import apply_stored, rates_info
 from .storage import Store, open_store
 
 log = logging.getLogger(__name__)
@@ -54,6 +55,7 @@ class NeedsIn(BaseModel):
     must: list[MustIn] = Field(default_factory=list)
     official_only: bool = False
     in_stock_only: bool = False
+    nepal_only: bool = False       # only devices sold in Nepal (else converted prices abroad count too)
     top: int = Field(default=5, ge=1, le=20)
 
 
@@ -86,6 +88,10 @@ def summary(p: Product) -> dict[str, Any]:
         "key": p.key, "name": p.name, "brand": p.brand, "category": p.category.value,
         "image": p.image, "rating": p.rating, "review_count": p.review_count,
         "best_price": p.best_price, "reference_price": p.reference_price_npr,
+        "available_in_nepal": p.available_in_nepal,
+        # Not sold in Nepal: its cheapest price abroad, converted to NPR at the current rate.
+        "converted_price": conv.price_npr if (conv := (None if p.available_in_nepal else p.converted_offer)) else None,
+        "converted_from": {"price": conv.price, "currency": conv.currency, "seller": conv.seller} if conv else None,
         "best_seller": best.seller if best else None, "best_official": best.official if best else None,
         "offer_count": len(p.local_offers()), "specs": p.specs,
         "sources": sorted({o.source for o in p.offers} | ({p.source} if p.source else set())),
@@ -113,7 +119,14 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
     worker_thread = LocalWorker(db, sources) if jobs_mode == "local" else None
 
     def store() -> Store:
-        return open_store(db)
+        s = open_store(db)
+        try:   # the exchange rates the scraper fetched on its last run
+            stored = s.get_kv("fx_rates")
+            if stored:
+                apply_stored(json.loads(stored))
+        except Exception:
+            pass
+        return s
 
     @app.get("/api/health", include_in_schema=False)
     def health():
@@ -132,7 +145,7 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
         finally:
             s.close()
         return {**spec_meta(), "stats": stats, "version": __version__, "read_only": read_only, "sample": sample,
-                "jobs_mode": jobs_mode, "admin_required": admin_required}
+                "jobs_mode": jobs_mode, "admin_required": admin_required, "rates": rates_info()}
 
     def run_advice(needs: Needs) -> dict:
         s = store()
@@ -166,7 +179,7 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
             category=body.category, budget_min=body.budget_min, budget_max=body.budget_max,
             uses=body.uses or {"balanced": 1.0}, os=body.os, brands=body.brands, exclude_brands=body.exclude_brands,
             must={m.key: (m.op, m.value) for m in body.must}, official_only=body.official_only,
-            in_stock_only=body.in_stock_only, top=body.top,
+            in_stock_only=body.in_stock_only, nepal_only=body.nepal_only, top=body.top,
         )
         return run_advice(needs)
 
@@ -216,7 +229,8 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
             ({"seller": o.seller or o.source, "source": o.source, "url": o.url, "price": o.price,
               "currency": o.currency, "price_npr": o.price_npr, "variant": o.variant, "official": o.official,
               "in_stock": o.in_stock, "region": o.region, "suspicious": o.suspicious,
-              "original_price": o.original_price, "scraped_at": o.scraped_at} for o in p.offers),
+              "original_price": o.original_price, "scraped_at": o.scraped_at,
+              "converted": (o.currency or "NPR").upper() not in ("NPR", "RS", "NRS")} for o in p.offers),
             key=lambda o: (o["region"] == "intl", o["suspicious"], o["price_npr"] or 1e12),
         )
         return {**summary(p), "offers": offers, "history": history, "spec_sources": spec_sources,

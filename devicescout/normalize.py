@@ -396,3 +396,25 @@ def finalize(product: Product, category_hint: str | None = None) -> Product:
         specs["os"] = os_name
     product.specs = {**specs, **product.specs}
     return product
+
+
+_CUR_TOKEN = {"$": "USD", "US$": "USD", "USD": "USD", "€": "EUR", "EUR": "EUR", "£": "GBP", "GBP": "GBP",
+              "₹": "INR", "INR": "INR", "RS": "NPR", "NPR": "NPR", "AED": "AED", "¥": "CNY", "CNY": "CNY"}
+_PREFER = ("USD", "EUR", "GBP", "INR", "AED", "CNY")
+_MONEY = re.compile(r"(US\$|\$|€|£|₹|¥)\s*([\d.,]+)|([\d.,]+)\s*(USD|EUR|GBP|INR|AED|CNY)\b", re.I)
+
+
+def parse_foreign_price(text: str | None) -> tuple[float, str] | None:
+    """'$ 299.99 / € 279.00 / £ 249.00 / ₹ 24,999' or 'About 250 EUR' -> (299.99, 'USD').
+    With several currencies, USD is preferred (then EUR, GBP, INR ...)."""
+    found: dict[str, float] = {}
+    for m in _MONEY.finditer(text or ""):
+        sym, num = (m.group(1), m.group(2)) if m.group(1) else (m.group(4), m.group(3))
+        cur = _CUR_TOKEN.get(sym.upper()) or _CUR_TOKEN.get(sym)
+        amount = parse_price(num)
+        if cur and amount and cur not in found:
+            found[cur] = amount
+    for cur in _PREFER:
+        if cur in found:
+            return found[cur], cur
+    return None

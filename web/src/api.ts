@@ -51,6 +51,20 @@ export interface Meta {
   sample: boolean;
   jobs_mode: "local" | "queue" | "off";
   admin_required: boolean;
+  rates?: Rates;
+}
+
+export interface Rates {
+  source: string;
+  date: string | null;
+  rates: Record<string, number>;
+}
+
+export interface ConvertedFrom {
+  price: number;
+  currency: string;
+  seller: string | null;
+  url?: string;
 }
 
 export interface Summary {
@@ -63,6 +77,9 @@ export interface Summary {
   review_count: number | null;
   best_price: number | null;
   reference_price: number | null;
+  available_in_nepal: boolean;
+  converted_price: number | null;       // not sold in Nepal: cheapest price abroad, in NPR
+  converted_from: ConvertedFrom | null;
   best_seller: string | null;
   best_official: boolean | null;
   offer_count: number;
@@ -72,7 +89,10 @@ export interface Summary {
 
 export interface WhereToBuy {
   seller: string;
-  price_npr: number;
+  price_npr: number | null;
+  converted?: boolean;
+  price?: number;
+  currency?: string;
   variant: string | null;
   official: boolean | null;
   in_stock: boolean | null;
@@ -83,7 +103,8 @@ export interface WhereToBuy {
 export interface Pick extends Summary {
   score: number;
   confidence: number;
-  price_npr: number;
+  price_npr: number | null;
+  price_converted: boolean;
   strengths: string[];
   weaknesses: string[];
   warnings: string[];
@@ -115,6 +136,7 @@ export interface NeedsRequest {
   exclude_brands?: string[];
   official_only: boolean;
   in_stock_only: boolean;
+  nepal_only?: boolean;
   top?: number;
 }
 
@@ -144,6 +166,7 @@ export interface Offer {
   suspicious: boolean;
   original_price: number | null;
   scraped_at: string | null;
+  converted?: boolean;
 }
 
 export interface ProductDetail extends Summary {

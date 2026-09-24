@@ -175,6 +175,23 @@ def recently_checked(entries: list[dict], hours: float = 12) -> bool:
     return True
 
 
+def refresh_rates(store, log: Log = print) -> None:
+    """Today's exchange rates, saved for the website: every foreign price is converted with them."""
+    from .currency import apply_stored, fetch_rates
+    info = fetch_rates()
+    if info:
+        store.set_kv("fx_rates", json.dumps(info))
+        usd = info["rates"].get("USD")
+        log(f"exchange rates: {info['source']} {info.get('date') or ''}" + (f", 1 USD = Rs {usd:g}" if usd else ""))
+        return
+    stored = store.get_kv("fx_rates")
+    if stored:
+        apply_stored(json.loads(stored))
+        log("exchange rates: feeds unreachable, using the last saved rates")
+    else:
+        log("exchange rates: feeds unreachable, using built-in estimates")
+
+
 def run_scrape(entries: list[dict], db_path, log: Log = print, limit: int = 0, delay: float = 2.0,
                mode: str = "static", respect_robots: bool = True, fetcher_factory=Fetcher,
                cancel: threading.Event | None = None, verbose: bool = False,
@@ -182,6 +199,7 @@ def run_scrape(entries: list[dict], db_path, log: Log = print, limit: int = 0, d
     store = open_store(db_path)
     counts: dict[str, int] = {}
     entries = scrape_order(entries)
+    refresh_rates(store, log)
     try:
         with fetcher_factory(mode=mode, delay=delay, respect_robots=respect_robots) as fetcher:
             for i, e in enumerate(entries):

@@ -235,6 +235,12 @@ Pages are fetched through a **chain of scrapers** (`sources/backends.py`):
 
 A response counts as blocked on 401/403/429/503, on a bot-wall page, or when HTML arrives where JSON was expected; the next scraper is then tried. The one that gets through is remembered for that site. A 404 is not retried. Install the optional scrapers with `pip install "devicescout[extra-scrapers]"`.
 
+## Prices abroad and exchange rates
+
+Every scrape starts by fetching today's exchange rates: Nepal Rastra Bank's official rates first, open.er-api.com if NRB is unreachable, the last saved rates if both are down. Any price a site shows in another currency (a USD price on a review site, GSMArena's "Price" row, an Indian store in INR) is converted to NPR with those rates.
+
+Devices no Nepali store sells are still shown: in Browse, Compare, the product page and the advisor, as "≈ Rs 1,25,860, converted from $899 · Not sold in Nepal yet". Hovering the price shows the rate and its date. Converted prices leave out import duty, VAT and shipping, so a device bought here usually costs more. They are never mixed into real Nepali prices, deals or price history. In the advisor, "Only sold in Nepal" hides them. A device with no price anywhere is shown as "No price yet" when you haven't set a budget.
+
 ## How the advisor decides
 
 1. **Hard filters.** Only offers from Nepal count, in NPR. Budget, OS, brands, must-haves, and the `--official-only` and `--in-stock` options are applied here. If a must-have *can't be checked* because the data is missing, the device isn't dropped. It's marked "could not confirm" and loses points, so a listing can't win just by leaving data out.

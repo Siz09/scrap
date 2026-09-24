@@ -5,8 +5,16 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def isolated_home(tmp_path, monkeypatch):
-    """Keep tests out of the real per-user data directory."""
+    """Keep tests out of the real per-user data directory, off the exchange-rate feeds, and
+    give each test the built-in rates."""
+    from devicescout import currency
     monkeypatch.setenv("DEVICESCOUT_HOME", str(tmp_path / "home"))
+
+    def offline(url, timeout=15):
+        raise OSError("no network in tests")
+    monkeypatch.setattr(currency, "_get_json", offline)
+    monkeypatch.setattr(currency, "RATES_TO_NPR", dict(currency.RATES_TO_NPR))
+    monkeypatch.setattr(currency, "RATES_INFO", dict(currency.RATES_INFO))
 
 
 PG_URL = os.getenv("DEVICESCOUT_TEST_PG")   # e.g. postgresql://postgres@localhost/devicescout_test

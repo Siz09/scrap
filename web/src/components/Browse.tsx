@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { api, type Summary } from "../api";
 import { useApp } from "../context";
-import { chipKeys, chipSpec, npr, parseAmount } from "../format";
+import { chipKeys, chipSpec, parseAmount } from "../format";
+import PriceTag from "./PriceTag";
 
 const PAGE = 40;
 
@@ -84,7 +85,8 @@ export default function Browse() {
             <article key={p.key} className="card tile">
               <h3><a href={`#/product/${encodeURIComponent(p.key)}`}>{p.name}</a></h3>
               <div className="tile-price">
-                <strong>{npr(p.best_price)}</strong>
+                <PriceTag local={p.best_price} converted={p.converted_price} from={p.converted_from}
+                          available={p.available_in_nepal} compact />
                 {p.offer_count > 1 && <span className="muted"> · {p.offer_count} sellers</span>}
                 {p.best_official && <span className="badge good">Official</span>}
               </div>

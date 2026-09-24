@@ -353,3 +353,6 @@ tr.suspicious td:first-child a { text-decoration: line-through; }
   .uses { grid-template-columns: 1fr 1fr; }
   .detail-price strong { font-size: 1.3rem; }
 }
+
+.price-tag { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0.35rem; }
+.price-tag .badge { font-weight: 500; }

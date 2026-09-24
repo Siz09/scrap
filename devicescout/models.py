@@ -126,6 +126,17 @@ class Product:
         prices = [o.price_npr for o in self.offers if o.region == "intl" and o.price_npr is not None]
         return min(prices) if prices else None
 
+    @property
+    def available_in_nepal(self) -> bool:
+        """A Nepali store (or Nepali listed-price site) lists it with a trustworthy price."""
+        return bool(self.local_offers())
+
+    @property
+    def converted_offer(self) -> Offer | None:
+        """Cheapest trustworthy price abroad (any currency), for devices not sold in Nepal."""
+        offers = [o for o in self.offers if o.region == "intl" and o.price_npr is not None and not o.suspicious]
+        return min(offers, key=lambda o: o.price_npr) if offers else None
+
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["category"] = self.category.value

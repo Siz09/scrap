@@ -21,7 +21,7 @@ def test_meta(client):
     phone = next(c for c in m["categories"] if c["id"] == "phone")
     assert {"photography", "gaming", "battery"} <= {u["id"] for u in phone["uses"]}
     assert any(x["key"] == "has_5g" for x in phone["musts"])
-    assert m["stats"]["products"] == 22 and m["sample"] is True
+    assert m["stats"]["products"] == 23 and m["sample"] is True
     assert m["specs"]["battery_mah"]["unit"] == "mAh"
 
 
@@ -179,3 +179,18 @@ def test_manage_sources_from_the_page(tmp_path):
     assert c.delete("/api/sources/hukut").json()["removed"] == "hukut"
     names = {x["name"]: x for x in c.get("/api/sources").json()["sources"]}
     assert "hukut" not in names and names["newstore"]["enabled"] is False
+
+
+def test_device_sold_only_abroad_is_shown_with_a_converted_price(client):
+    m = client.get("/api/meta").json()
+    assert m["rates"]["rates"]["USD"] > 0 and m["rates"]["source"]
+    items = client.get("/api/products", params={"q": "himal fold"}).json()["items"]
+    fold = next(p for p in items if p["name"] == "Himal Fold 2")
+    assert fold["available_in_nepal"] is False and fold["best_price"] is None
+    assert fold["converted_price"] == round(899 * m["rates"]["rates"]["USD"], 2)
+    assert fold["converted_from"]["currency"] == "USD"
+    picks = client.post("/api/advise", json={"category": "phone", "uses": {"balanced": 1}, "top": 20}).json()["picks"]
+    assert any(p["name"] == "Himal Fold 2" and p["price_converted"] for p in picks)
+    picks = client.post("/api/advise", json={"category": "phone", "uses": {"balanced": 1}, "top": 20,
+                                             "nepal_only": True}).json()["picks"]
+    assert not any(p["name"] == "Himal Fold 2" for p in picks)
