@@ -1,0 +1,98 @@
+{
+  "_readme": [
+    "Every source DeviceScout knows about. Run `devicescout check` on a machine with internet access first:",
+    "it detects each store's platform (Shopify / WooCommerce / JSON-LD), pulls one sample product, and reports OK/FAIL.",
+    "verified=false means the adapter follows the site's platform conventions but has not been run against the live site yet.",
+    "region: np = buyable in Nepal (NPR) | np-ref = Nepali listed/official price, not a shop | intl = reference only.",
+    "Check each site's terms of service and robots.txt before scraping it at scale; keep delays polite."
+  ],
+  "sources": [
+    {
+      "name": "daraz-np", "type": "daraz", "enabled": true, "role": "offers", "region": "np", "verified": false,
+      "domain": "www.daraz.com.np",
+      "categories": ["mobile-phones", "laptops", "tablets", "smart-watches"],
+      "queries": ["power bank", "fast charger", "usb c cable", "earbuds"],
+      "pages": 5,
+      "notes": "Largest marketplace. Uses the catalog's own ?ajax=true JSON. Many third-party sellers: expect grey imports and clones; suspicious prices are auto-flagged."
+    },
+    {
+      "name": "hukut", "type": "auto", "enabled": true, "role": "offers", "region": "np", "verified": false,
+      "base_url": "https://hukut.com",
+      "notes": "Phones, laptops, watches; EMI. Platform unknown until `check` runs."
+    },
+    {
+      "name": "brother-mart", "type": "auto", "enabled": true, "role": "offers", "region": "np", "verified": false,
+      "base_url": "https://brother-mart.com",
+      "collections": ["smartphones-mobilephones-price-in-nepal"],
+      "notes": "/collections/ URLs suggest Shopify; `check` confirms. Add more collection handles after checking."
+    },
+    {
+      "name": "oliz-store", "type": "auto", "enabled": true, "role": "offers", "region": "np", "verified": false,
+      "base_url": "https://olizstore.com",
+      "notes": "Premium electronics, Apple lineup."
+    },
+    {
+      "name": "fatafat-sewa", "type": "auto", "enabled": true, "role": "offers", "region": "np", "verified": false,
+      "base_url": "https://fatafatsewa.com",
+      "notes": "Phones on EMI."
+    },
+    {
+      "name": "itti", "type": "auto", "enabled": true, "role": "offers", "region": "np", "verified": false,
+      "base_url": "https://itti.com.np", "category_hint": "laptop",
+      "notes": "Laptop-focused store."
+    },
+    {
+      "name": "onlineit", "type": "auto", "enabled": true, "role": "offers", "region": "np", "verified": false,
+      "base_url": "https://onlineit.com.np", "category_hint": "laptop",
+      "notes": "Laptop-focused store."
+    },
+    {
+      "name": "itechstore", "type": "auto", "enabled": true, "role": "offers", "region": "np", "verified": false,
+      "base_url": "https://itechstore.com.np",
+      "notes": "Says it is an authorised distributor for Apple/HP/Lenovo/Dell; set \"official\": true once confirmed."
+    },
+    {
+      "name": "smartdoko", "type": "auto", "enabled": true, "role": "offers", "region": "np", "verified": false,
+      "base_url": "https://smartdoko.com"
+    },
+    {
+      "name": "sastodeal", "type": "auto", "enabled": true, "role": "offers", "region": "np", "verified": false,
+      "base_url": "https://www.sastodeal.com"
+    },
+    {
+      "name": "gadgetbyte", "type": "jsonld", "enabled": true, "role": "reference", "region": "np-ref", "verified": false,
+      "base_url": "https://www.gadgetbytenepal.com", "url_include": "price-in-nepal", "url_exclude": "/(category|tag|author|page)/",
+      "price_from_text": true, "currency": "NPR",
+      "notes": "Nepal's main tech site; official launch prices + specs per model. Not a shop."
+    },
+    {
+      "name": "pricenepal", "type": "jsonld", "enabled": true, "role": "reference", "region": "np-ref", "verified": false,
+      "base_url": "https://www.pricenepal.com", "url_include": "price", "price_from_text": true, "currency": "NPR"
+    },
+    {
+      "name": "nepaltechhub", "type": "auto", "enabled": true, "role": "reference", "region": "np-ref", "verified": false,
+      "base_url": "https://www.nepaltechhub.com", "price_from_text": true, "currency": "NPR"
+    },
+    {
+      "name": "gsmarena", "type": "gsmarena", "enabled": true, "role": "specs", "region": "intl", "verified": false,
+      "brands": ["samsung", "apple", "xiaomi", "oneplus", "google", "oppo", "vivo", "realme", "honor", "motorola", "nothing", "huawei"],
+      "pages": 2,
+      "notes": "Most complete phone/tablet/watch spec database. Specs only, no prices."
+    },
+    {
+      "name": "notebookcheck", "type": "jsonld", "enabled": true, "role": "reviews", "region": "intl", "verified": false,
+      "base_url": "https://www.notebookcheck.net", "url_include": "review.*\\.\\d+\\.0\\.html$", "url_exclude": "",
+      "notes": "Independent lab reviews of laptops and phones; review score -> expert_score (answers 'is it actually good', which specs cannot)."
+    },
+    {
+      "name": "dxomark", "type": "auto", "enabled": false, "role": "reviews", "region": "intl", "verified": false,
+      "base_url": "https://www.dxomark.com", "fetch_mode": "dynamic",
+      "notes": "Camera/display/battery lab scores; key for the photography profile. JS-heavy: needs fetch_mode dynamic and a custom parser before enabling."
+    },
+    {
+      "name": "samsung-in", "type": "jsonld", "enabled": false, "role": "reference", "region": "intl", "verified": false,
+      "base_url": "https://www.samsung.com/in/", "currency": "INR", "url_include": "/in/smartphones/.*/buy/",
+      "notes": "Official India prices (NPR is pegged to INR at 1.6) to judge whether a Nepali price is fair. Enable after reviewing Samsung's terms."
+    }
+  ]
+}

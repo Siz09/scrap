@@ -22,9 +22,10 @@ Weights = list[tuple[str, float, bool]]
 
 PROFILES: dict[str, dict[Category, Weights]] = {
     "photography": {
-        Category.PHONE: [("main_camera_mp", 0.15, True), ("optical_zoom_x", 0.30, True),
-                         ("has_ois", 0.20, True), ("camera_count", 0.15, True),
-                         ("storage_gb", 0.10, True), ("chip_tier", 0.10, True)],
+        Category.PHONE: [("main_camera_mp", 0.10, True), ("optical_zoom_x", 0.25, True),
+                         ("has_ois", 0.15, True), ("camera_count", 0.10, True),
+                         ("storage_gb", 0.10, True), ("chip_tier", 0.10, True),
+                         ("expert_score", 0.20, True)],
         Category.TABLET: [("main_camera_mp", 0.5, True), ("display_size_in", 0.5, True)],
     },
     "gaming": {
@@ -52,6 +53,49 @@ PROFILES: dict[str, dict[Category, Weights]] = {
         Category.PHONE: [("resolution_px", 0.35, True), ("refresh_rate_hz", 0.35, True), ("display_size_in", 0.3, True)],
         Category.LAPTOP: [("resolution_px", 0.4, True), ("refresh_rate_hz", 0.3, True), ("display_size_in", 0.3, True)],
         Category.TABLET: [("resolution_px", 0.4, True), ("refresh_rate_hz", 0.3, True), ("display_size_in", 0.3, True)],
+    },
+    # Everyday use: social media, calls, video, a long day away from a charger.
+    "everyday": {
+        Category.PHONE: [("battery_mah", 0.25, True), ("display_quality", 0.15, True), ("chip_tier", 0.15, True),
+                         ("storage_gb", 0.10, True), ("charging_w", 0.10, True), ("rating", 0.15, True),
+                         ("release_year", 0.10, True)],
+        Category.LAPTOP: [("battery_wh", 0.3, True), ("weight_g", 0.2, False), ("ram_gb", 0.2, True),
+                          ("rating", 0.2, True), ("release_year", 0.1, True)],
+        Category.TABLET: [("display_size_in", 0.3, True), ("battery_mah", 0.3, True), ("rating", 0.4, True)],
+    },
+    "student": {
+        Category.LAPTOP: [("battery_wh", 0.3, True), ("weight_g", 0.25, False), ("ram_gb", 0.2, True),
+                          ("storage_gb", 0.1, True), ("chip_tier", 0.15, True)],
+        Category.PHONE: [("battery_mah", 0.3, True), ("storage_gb", 0.2, True), ("chip_tier", 0.2, True),
+                         ("release_year", 0.3, True)],
+        Category.TABLET: [("display_size_in", 0.3, True), ("battery_mah", 0.3, True), ("storage_gb", 0.2, True),
+                          ("chip_tier", 0.2, True)],
+    },
+    "business": {
+        Category.LAPTOP: [("battery_wh", 0.3, True), ("weight_g", 0.25, False), ("ram_gb", 0.2, True),
+                          ("chip_tier", 0.15, True), ("rating", 0.1, True)],
+        Category.PHONE: [("battery_mah", 0.3, True), ("release_year", 0.3, True), ("has_nfc", 0.1, True),
+                         ("rating", 0.3, True)],
+    },
+    "programming": {
+        Category.LAPTOP: [("ram_gb", 0.35, True), ("chip_tier", 0.25, True), ("storage_gb", 0.15, True),
+                          ("battery_wh", 0.15, True), ("resolution_px", 0.10, True)],
+    },
+    "content_creation": {
+        Category.LAPTOP: [("has_dedicated_gpu", 0.25, True), ("ram_gb", 0.2, True), ("chip_tier", 0.2, True),
+                          ("resolution_px", 0.15, True), ("storage_gb", 0.2, True)],
+        Category.PHONE: [("storage_gb", 0.25, True), ("has_ois", 0.2, True), ("chip_tier", 0.2, True),
+                         ("main_camera_mp", 0.15, True), ("expert_score", 0.2, True)],
+        Category.TABLET: [("display_size_in", 0.3, True), ("chip_tier", 0.3, True), ("storage_gb", 0.4, True)],
+    },
+    "fitness": {
+        Category.SMARTWATCH: [("has_gps", 0.35, True), ("battery_mah", 0.3, True), ("water_rating", 0.2, True),
+                              ("weight_g", 0.15, False)],
+    },
+    "fast_charging": {
+        Category.PHONE: [("charging_w", 0.7, True), ("battery_mah", 0.3, True)],
+        Category.POWER_BANK: [("output_w", 0.7, True), ("capacity_mah", 0.3, True)],
+        Category.CHARGER: [("output_w", 1.0, True)],
     },
     "balanced": {
         Category.PHONE: [("chip_tier", 0.2, True), ("main_camera_mp", 0.1, True), ("optical_zoom_x", 0.1, True),
@@ -88,11 +132,30 @@ def chip_tier(chipset: str | None) -> float | None:
     return None
 
 
-def _value(p: Product, key: str) -> float | None:
+def water_rating(code: str | None) -> float | None:
+    """IP68 -> 8, IP67 -> 7, IPX4 -> 4, 5ATM -> 7, 10ATM -> 8 (rough equivalence)."""
+    if not code:
+        return None
+    if (m := re.match(r"IP[X\d](\d)", code, re.I)):
+        return float(m.group(1))
+    if (m := re.match(r"(\d+)ATM", code, re.I)):
+        return 8.0 if int(m.group(1)) >= 10 else 7.0 if int(m.group(1)) >= 5 else 5.0
+    return None
+
+
+def spec_value(p: Product, key: str) -> float | None:
     if key == "chip_tier":
         return chip_tier(p.specs.get("chipset"))
     if key == "rating":
-        return p.rating
+        # Few reviews = noise; ignore ratings backed by fewer than 5 reviews.
+        return p.rating if p.rating is not None and (p.review_count or 0) >= 5 else None
+    if key == "water_rating":
+        return water_rating(p.specs.get("water_resistance"))
+    if key == "display_quality":
+        res, hz = p.specs.get("resolution_px"), p.specs.get("refresh_rate_hz")
+        if res is None and hz is None:
+            return None
+        return (res or 2_000_000) / 1_000_000 + (hz or 60) / 30
     v = p.specs.get(key)
     if isinstance(v, bool):
         return 1.0 if v else 0.0
@@ -124,14 +187,14 @@ class Ranked:
     score: float        # 0-100
     coverage: float     # 0-1
     breakdown: dict[str, float | None]
-    value_score: float | None = None  # score per 100 units of currency
+    value_score: float | None = None  # score points per 1,000 NPR
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.product.name, "category": self.product.category.value,
             "score": round(self.score, 1), "coverage": round(self.coverage, 2),
             "value_score": None if self.value_score is None else round(self.value_score, 2),
-            "best_price": self.product.best_price,
+            "best_price_npr": self.product.best_price,
             "os": self.product.specs.get("os"),
             "breakdown": {k: None if v is None else round(v, 2) for k, v in self.breakdown.items()},
             "sources": sorted({o.source for o in self.product.offers} | {self.product.source}),
@@ -155,14 +218,21 @@ def rank(products: list[Product], profile: str, category: Category,
     if not pool:
         return []
 
-    columns = {key: _percentiles([_value(p, key) for p in pool], hib) for key, _, hib in weights}
+    results = [r for r in score_pool(pool, weights) if r.coverage >= min_coverage]
+    results.sort(key=lambda r: r.score, reverse=True)
+    return results
+
+
+def score_pool(pool: list[Product], weights: Weights) -> list[Ranked]:
+    """Percentile-score every product in `pool` against the others on `weights`."""
+    columns = {key: _percentiles([spec_value(p, key) for p in pool], hib) for key, _, hib in weights}
     total_w = sum(w for _, w, _ in weights)
     results: list[Ranked] = []
     for i, p in enumerate(pool):
         breakdown = {key: columns[key][i] for key, _, _ in weights}
         known_w = sum(w for key, w, _ in weights if breakdown[key] is not None)
-        coverage = known_w / total_w
-        if coverage == 0 or coverage < min_coverage:
+        coverage = known_w / total_w if total_w else 0
+        if coverage == 0:
             continue
         # Score over the specs we know, then shrink toward 50 by missing coverage,
         # so sparse listings can't top the chart on one lucky spec.
@@ -170,6 +240,5 @@ def rank(products: list[Product], profile: str, category: Category,
         score = 100 * (coverage * known_score + (1 - coverage) * 0.5)
         price = p.best_price
         results.append(Ranked(p, score, coverage, breakdown,
-                              value_score=score / price * 100 if price else None))
-    results.sort(key=lambda r: r.score, reverse=True)
+                              value_score=score / price * 1000 if price else None))
     return results

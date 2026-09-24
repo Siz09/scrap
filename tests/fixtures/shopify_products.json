@@ -1,0 +1,10 @@
+{"products": [
+ {"id": 1, "title": "Samsung Galaxy A56 5G", "handle": "samsung-galaxy-a56-5g", "vendor": "Samsung", "product_type": "Smartphone", "tags": ["Samsung", "5G"],
+  "body_html": "<p><strong>Key Specs</strong></p><ul><li>Display: 6.7\" Super AMOLED, 120Hz</li><li>Chipset: Exynos 1580</li><li>RAM: 8GB</li><li>Storage: 128GB / 256GB</li><li>Main Camera: 50MP (OIS) + 12MP + 5MP</li><li>Battery: 5000mAh, 45W fast charging</li><li>Weight: 198 g</li><li>IP Rating: IP67</li></ul>",
+  "variants": [
+   {"id": 11, "title": "8GB / 128GB", "price": "52999.00", "compare_at_price": null, "available": true, "barcode": "8806095467884"},
+   {"id": 12, "title": "8GB / 256GB", "price": "57999.00", "compare_at_price": "59999.00", "available": true, "barcode": "8806095467891"}],
+  "images": [{"src": "https://cdn.shopify.com/a56.jpg"}]},
+ {"id": 2, "title": "Spigen Tough Armor Case for Galaxy A56", "handle": "spigen-a56", "vendor": "Spigen", "product_type": "Case", "tags": [], "body_html": "",
+  "variants": [{"id": 21, "title": "Default Title", "price": "2499.00", "available": true, "barcode": ""}], "images": []}
+]}

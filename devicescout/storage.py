@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .models import Category, Offer, Product
 from .normalize import canonical_key
+from .pricing import flag_suspicious
 
 SOURCE_PRIORITY = {"gsmarena": 10}  # everything else defaults to 0
 
@@ -30,20 +32,31 @@ CREATE TABLE IF NOT EXISTS products (
     image TEXT,
     primary_source TEXT,
     primary_url TEXT,
+    gtin TEXT,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS offers (
     product_key TEXT NOT NULL REFERENCES products(key),
     source TEXT NOT NULL,
     url TEXT NOT NULL,
+    variant TEXT NOT NULL DEFAULT '',
     price REAL,
     currency TEXT,
     in_stock INTEGER,
-    scraped_at TEXT,
-    PRIMARY KEY (product_key, url, scraped_at)
+    scraped_at TEXT NOT NULL,
+    region TEXT NOT NULL DEFAULT 'np',
+    seller TEXT,
+    official INTEGER,
+    original_price REAL,
+    PRIMARY KEY (product_key, url, variant, scraped_at)
 );
 CREATE INDEX IF NOT EXISTS idx_products_category ON products(category);
+CREATE INDEX IF NOT EXISTS idx_products_gtin ON products(gtin);
 """
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 class Store:
@@ -55,8 +68,16 @@ class Store:
     def close(self) -> None:
         self.db.close()
 
+    def _key_for(self, p: Product) -> str:
+        # A barcode match beats any name heuristic.
+        if p.gtin:
+            row = self.db.execute("SELECT key FROM products WHERE gtin = ?", (p.gtin,)).fetchone()
+            if row:
+                return row["key"]
+        return canonical_key(p.brand, p.name)
+
     def upsert(self, p: Product) -> str:
-        key = canonical_key(p.brand, p.name)
+        key = self._key_for(p)
         row = self.db.execute("SELECT * FROM products WHERE key = ?", (key,)).fetchone()
         prio = SOURCE_PRIORITY.get(p.source, 0)
 
@@ -89,24 +110,28 @@ class Store:
             else:
                 rating, reviews = row["rating"], row["review_count"]
             image = row["image"] or p.image
+        gtin = p.gtin or (row["gtin"] if row is not None else None)
 
         self.db.execute(
             """INSERT INTO products (key, name, brand, category, specs, spec_sources, raw_specs,
-                                     rating, review_count, image, primary_source, primary_url)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                                     rating, review_count, image, primary_source, primary_url, gtin)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(key) DO UPDATE SET name=excluded.name, brand=excluded.brand,
                  category=excluded.category, specs=excluded.specs, spec_sources=excluded.spec_sources,
                  raw_specs=excluded.raw_specs, rating=excluded.rating, review_count=excluded.review_count,
                  image=excluded.image, primary_source=excluded.primary_source,
-                 primary_url=excluded.primary_url, updated_at=CURRENT_TIMESTAMP""",
+                 primary_url=excluded.primary_url, gtin=excluded.gtin, updated_at=CURRENT_TIMESTAMP""",
             (key, name, brand, category.value, json.dumps(specs), json.dumps(spec_sources),
-             json.dumps(raw), rating, reviews, image, primary_source, primary_url),
+             json.dumps(raw), rating, reviews, image, primary_source, primary_url, gtin),
         )
         for o in p.offers:
             self.db.execute(
-                "INSERT OR REPLACE INTO offers VALUES (?,?,?,?,?,?,?)",
-                (key, o.source, o.url, o.price, o.currency,
-                 None if o.in_stock is None else int(o.in_stock), o.scraped_at),
+                """INSERT OR REPLACE INTO offers (product_key, source, url, variant, price, currency,
+                     in_stock, scraped_at, region, seller, official, original_price)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (key, o.source, o.url, o.variant or "", o.price, o.currency,
+                 None if o.in_stock is None else int(o.in_stock), o.scraped_at or _now(),
+                 o.region, o.seller, None if o.official is None else int(o.official), o.original_price),
             )
         self.db.commit()
         return key
@@ -121,19 +146,22 @@ class Store:
             offers = [
                 Offer(source=o["source"], url=o["url"], price=o["price"], currency=o["currency"],
                       in_stock=None if o["in_stock"] is None else bool(o["in_stock"]),
-                      scraped_at=o["scraped_at"])
+                      scraped_at=o["scraped_at"], region=o["region"], seller=o["seller"],
+                      official=None if o["official"] is None else bool(o["official"]),
+                      variant=o["variant"] or None, original_price=o["original_price"])
                 for o in self.db.execute(
                     """SELECT * FROM offers o WHERE product_key = ? AND scraped_at = (
-                         SELECT MAX(scraped_at) FROM offers WHERE product_key = o.product_key AND url = o.url)""",
+                         SELECT MAX(scraped_at) FROM offers
+                         WHERE product_key = o.product_key AND url = o.url AND variant = o.variant)""",
                     (row["key"],),
                 ).fetchall()
             ]
-            out.append(Product(
+            out.append(flag_suspicious(Product(
                 source=row["primary_source"], url=row["primary_url"], name=row["name"],
                 brand=row["brand"], category=Category(row["category"]),
                 specs=json.loads(row["specs"]), offers=offers, rating=row["rating"],
-                review_count=row["review_count"], image=row["image"],
-            ))
+                review_count=row["review_count"], image=row["image"], gtin=row["gtin"],
+            )))
         return out
 
     def price_history(self, key: str) -> list[sqlite3.Row]:

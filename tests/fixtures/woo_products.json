@@ -1,0 +1,12 @@
+[
+ {"id": 501, "name": "Lenovo IdeaPad Slim 5 14 (Core Ultra 5, 16GB, 512GB)", "permalink": "https://store.example.com.np/product/lenovo-ideapad-slim-5/", "sku": "83DA",
+  "short_description": "<p>Thin and light 14-inch laptop.</p>",
+  "description": "<table><tr><th>Processor</th><td>Intel Core Ultra 5 125H</td></tr><tr><th>Display</th><td>14 inch WUXGA 1920 x 1200 OLED</td></tr></table>",
+  "prices": {"price": "10999900", "regular_price": "11499900", "sale_price": "10999900", "currency_code": "NPR", "currency_minor_unit": 2},
+  "average_rating": "4.50", "review_count": 12, "is_in_stock": true,
+  "images": [{"src": "https://store.example.com.np/img/slim5.jpg"}],
+  "categories": [{"id": 7, "name": "Laptops", "slug": "laptops"}],
+  "attributes": [{"name": "RAM", "terms": [{"name": "16GB"}]}, {"name": "Storage", "terms": [{"name": "512GB SSD"}]},
+                 {"name": "Battery", "terms": [{"name": "57Wh"}]}, {"name": "Weight", "terms": [{"name": "1.46 kg"}]},
+                 {"name": "Graphics", "terms": [{"name": "Intel Arc Graphics"}]}, {"name": "Operating System", "terms": [{"name": "Windows 11 Home"}]}]}
+]

@@ -55,8 +55,9 @@ def test_generic_jsonld_graph_and_price():
     p = generic("store_s24_ultra.html")
     assert p.brand == "Samsung"
     assert p.category == Category.PHONE
-    assert p.best_price == 1099.99
+    assert p.offers[0].price == 1099.99
     assert p.offers[0].currency == "USD" and p.offers[0].in_stock is True
+    assert p.best_price == 1099.99 * 140      # converted to NPR
     assert p.rating == 4.6 and p.review_count == 1289
     assert p.specs["battery_mah"] == 4900
 
@@ -73,7 +74,7 @@ def test_generic_additional_property():
 def test_generic_laptop_eu_price_and_dl_specs():
     p = generic("store_laptop.html")
     assert p.category == Category.LAPTOP
-    assert p.best_price == 1349.0 and p.offers[0].currency == "EUR"
+    assert p.offers[0].price == 1349.0 and p.offers[0].currency == "EUR"
     assert p.offers[0].in_stock is False
     assert p.rating == 4.5                  # 9/10 -> 4.5/5
     s = p.specs
@@ -128,7 +129,7 @@ def test_store_merges_sources_with_spec_priority(tmp_path):
     assert k1 == k2
     [p] = store.products(Category.PHONE)
     assert p.specs["battery_mah"] == 5000       # spec DB beats the retailer's 4,900
-    assert p.best_price == 1099.99              # price comes from the retailer
+    assert p.offers[0].price == 1099.99         # price comes from the retailer
     assert p.rating == 4.6
     assert p.name == "Samsung Galaxy S24 Ultra"
 
@@ -146,7 +147,7 @@ def test_rank_profiles(tmp_path):
     compact = rank(phones, "portability", Category.PHONE)
     assert compact[0].product.name.startswith("Google Pixel 9")
 
-    budget = rank(phones, "balanced", Category.PHONE, max_price=800)
+    budget = rank(phones, "balanced", Category.PHONE, max_price=800 * 140)  # NPR
     assert [r.product.name for r in budget] == ["Google Pixel 9 128GB Obsidian"]
 
     assert rank(phones, "gaming", Category.PHONE, os="ios") == []
