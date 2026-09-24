@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from .paths import source_status
 from .pipeline import IngestStats, ingest
 from .sources import Fetcher, build, load_entries
-from .sources.detect import detect, remember
+from .sources.detect import cached_platform, detect, remember
 from .storage import Store, open_store
 
 Log = Callable[[str], None]
@@ -105,6 +105,8 @@ def run_check(entries: list[dict], log: Log = print, sample: int = 3, delay: flo
                 got = []
                 for p in crawl_entry(e, fetcher, limit=sample):
                     got.append(p)
+                    if store is not None:
+                        ingest(store, p)     # what a check finds is kept, like a small scrape
                     if len(got) >= sample:
                         break
                 if got:
@@ -132,12 +134,40 @@ def run_check(entries: list[dict], log: Log = print, sample: int = 3, delay: flo
     return results
 
 
+_SPEED = {"shopify": 0, "woocommerce": 0, "daraz": 0, "gsmarena": 1, "jsonld": 2}
+
+
+def scrape_order(entries: list[dict]) -> list[dict]:
+    """Quick sources first (store APIs: a whole shop in minutes), whole-site browser walks
+    (hours) last, so data starts appearing right away."""
+    def speed(e):
+        kind = e.get("type", "auto")
+        platform = cached_platform(e["name"]) if kind == "auto" else kind
+        return _SPEED.get(platform or "", 3)
+    return sorted(entries, key=speed)
+
+
+def recently_checked(entries: list[dict], hours: float = 12) -> bool:
+    """Every source was checked within `hours` (so a restart needn't check them all again)."""
+    status = load_status()
+    now = datetime.now(timezone.utc)
+    for e in entries:
+        at = status.get(e["name"], {}).get("checked_at")
+        try:
+            if not at or (now - datetime.fromisoformat(at)).total_seconds() > hours * 3600:
+                return False
+        except ValueError:
+            return False
+    return True
+
+
 def run_scrape(entries: list[dict], db_path, log: Log = print, limit: int = 0, delay: float = 2.0,
                mode: str = "static", respect_robots: bool = True, fetcher_factory=Fetcher,
                cancel: threading.Event | None = None, verbose: bool = False,
                progress: Progress = _noop) -> dict[str, int]:
     store = open_store(db_path)
     counts: dict[str, int] = {}
+    entries = scrape_order(entries)
     try:
         with fetcher_factory(mode=mode, delay=delay, respect_robots=respect_robots) as fetcher:
             for i, e in enumerate(entries):

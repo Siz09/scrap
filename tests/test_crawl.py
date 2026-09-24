@@ -151,6 +151,8 @@ def test_cli_scrape_check_and_advise(tmp_path, monkeypatch, capsys):
     db = str(tmp_path / "d.db")
     cli.main(["--db", db, "--sources", str(reg), "check"])
     assert "daraz-np        OK" in capsys.readouterr().out
+    from devicescout.storage import Store
+    assert Store(db).stats()["raw_records"] == 3       # a check keeps the sample it pulled
     cli.main(["--db", db, "--sources", str(reg), "scrape", "--all"])
     assert "daraz-np: 6 records: 6 stored" in capsys.readouterr().out
     cli.main(["--db", db, "advise", "--category", "phone", "--budget", "50k", "--json"])
@@ -280,3 +282,23 @@ def test_site_crawl_stops_at_listing_budget():
     assert list(src.crawl(f, limit=100)) == []
     listing_fetches = [u for u in f.calls if not u.endswith((".xml", "robots.txt"))]
     assert len(set(listing_fetches)) <= 5
+
+
+def test_quick_sources_scrape_first_and_recent_checks_are_not_repeated():
+    from devicescout.jobs import _save_status, recently_checked, scrape_order
+    from devicescout.sources.detect import remember
+
+    remember("hukut", {"platform": "unknown"})
+    remember("brother-mart", {"platform": "shopify"})
+    entries = [{"name": "hukut"}, {"name": "gadgetbyte", "type": "jsonld"}, {"name": "brother-mart"},
+               {"name": "gsmarena", "type": "gsmarena"}]
+    assert [e["name"] for e in scrape_order(entries)] == ["brother-mart", "gsmarena", "gadgetbyte", "hukut"]
+
+    assert not recently_checked(entries)
+    for e in entries:
+        _save_status(e["name"], checked_at="2020-01-01T00:00:00+00:00")
+    assert not recently_checked(entries)
+    from devicescout.jobs import _now
+    for e in entries:
+        _save_status(e["name"], checked_at=_now())
+    assert recently_checked(entries)

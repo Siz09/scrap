@@ -330,8 +330,12 @@ def cmd_schedule(args) -> None:
             heartbeat()
             drain()
             stop.wait(5)
+    from .jobs import recently_checked, select_entries
     if args.check_first and not stop.is_set():
-        run("check", "schedule")
+        if recently_checked(select_entries(args.sources, [])):
+            say("all sources were checked in the last 12 h; going straight to scraping")
+        else:
+            run("check", "schedule")
     while not stop.is_set():
         run("scrape", "schedule")
         if stop.is_set():
