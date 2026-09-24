@@ -346,10 +346,25 @@ _TITLE_JUNK = re.compile(
 _PRICE_ARTICLE = re.compile(r"\s+(price\s+in\s+nepal|price\s*&\s*specs|full\s+specifications)\b.*$", re.I)
 
 
+# Words a page title adds after the product: 'Xiaomi Redmi Buds 8 Features', 'DJI Osmo Action 6 Overview'.
+_PAGE_WORDS = re.compile(r"(?:\s+(?:features(?:\s+(?:and|&)\s+specs)?|overview|details|specs|specifications|"
+                         r"full\s+specs|review))+\s*$", re.I)
+# A colon starts a tagline: 'Honor 600 Lite 5G: Stunning ...', 'Galaxy S26 FE: 5G'.
+_TAGLINE = re.compile(r"\s*:(?:\s.*)?$")
+
+
 def clean_title(name: str) -> str:
-    """Drop listing tails: ' - 1 Year Warranty', ' | Free Gift', ' Price in Nepal, Specs'."""
+    """Drop listing tails: ' - 1 Year Warranty', ' | Free Gift', ' Price in Nepal, Specs',
+    ': Stunning display ...', ' Features'."""
     name = _PRICE_ARTICLE.sub("", name)
-    return re.sub(r"\s+", " ", _TITLE_TAIL.sub("", name)).strip()
+    name = _TITLE_TAIL.sub("", name)
+    head = _TAGLINE.sub("", name)
+    if len(head.split()) >= 2:
+        name = head
+    head = _PAGE_WORDS.sub("", name)
+    if len(head.split()) >= 2:
+        name = head
+    return re.sub(r"\s+", " ", name).strip()
 
 
 # Where a phone/tablet/watch listing's model name ends and its sales pitch begins:
@@ -362,10 +377,13 @@ _PITCH = re.compile(
     r"(?:qualcomm|snapdragon|dimensity|mediatek|helio|exynos|tensor|kirin|unisoc|bionic|a\d{2}\s+bionic|"
     r"sony\s+lyt|octa[- ]?core|triple|quad|dual\s+camera|dual\s+rear|main\s+camera|rear\s+camera|battery|"
     r"processor|chipset|features|specs|specifications|amoled|oled|lcd|display|screen|"
-    r"android\s+\d+|ios\s+\d+|ai\b|nfc|fast\s+charg|charging|with\b|in\s+nepal)(?:\b|(?=[®™])))",
+    r"android\s+\d+|ios\s+\d+|ai\b|nfc|fast\s+charg|charging|with\b|in\s+nepal|xdr|super\s+retina|"
+    r"leica|lecia|hasselblad|zeiss|telephoto)(?:\b|(?=[®™])))",
     re.I,
 )
-_PITCH_CATEGORIES = {"phone", "tablet", "smartwatch"}
+_PITCH_CATEGORIES = {"phone", "tablet", "smartwatch", "earbuds"}
+# Products whose "for ..." names what they fit: kept whole.
+_FITS_SOMETHING = {"case", "cable", "charger", "accessory", "power_bank", "unknown", None}
 # 'Nord CE5' = 'Nord CE 5', 'Fold6' = 'Fold 6', 'iPhone16' = 'iPhone 16', 'HOT60' = 'HOT 60'
 # (a series word of 2+ letters glued to its number; single letters like 'A56', 'S24' stay).
 _JOINED_NUMBER = re.compile(r"\b([a-z]{2,})(\d)", re.I)
@@ -385,6 +403,10 @@ def model_name(name: str, category=None) -> str:
     name = re.sub(r"[®™©]", " ", clean_title(name))
     name = re.sub(r"\s+", " ", name).strip()
     cat = getattr(category, "value", category)
+    if cat not in _FITS_SOMETHING:          # 'Webcam for Clear Video Calls'; not 'Case for iPhone 16'
+        head = re.sub(r"\s+for\s+.*$", "", name, flags=re.I)
+        if len(head.split()) >= 2:
+            name = head
     if cat not in _PITCH_CATEGORIES:
         return name
     name = re.sub(r"\((20\d\d)\)", r"\1", name)          # a year in brackets is part of the model
@@ -398,7 +420,8 @@ def model_name(name: str, category=None) -> str:
     head = name[:cut].strip()
     if len(head.split()) < 2:                               # keep at least brand + model
         return name
-    head = re.sub(r"\s+(?:smart\s*phone|mobile(?:\s+phone)?|phone|tablet|smart\s*watch|dual\s+sim)$", "",
+    head = re.sub(r"(?:\s+(?:smart\s*phone|mobile(?:\s+phone)?|phone|tablet|smart\s*watch|dual\s+sim|"
+                  r"(?:true\s+)?wireless(?:\s+(?:earbuds|earphones|headphones))?|earbuds|earphones|tws))+$", "",
                   head, flags=re.I)
     return head.strip() or name
 
@@ -417,7 +440,7 @@ def canonical_key(brand: str | None, name: str, category=None) -> str:
     if cat in _PITCH_CATEGORIES:
         n = _JOINED_NUMBER.sub(r"\1 \2", n)
         n = re.sub(r"\b(\d+)\s*(gb|tb)\b", " ", n)
-    n = re.sub(r"[()\[\],/|+]", " ", n)
+    n = re.sub(r"[()\[\],/|+:\"”“]", " ", n)
     n = re.sub(r"(?<=\s)-(?=\s)|^-|-$", " ", n)
     n = _NOISE.sub(" ", n)
     n = re.sub(r"\s+", " ", n).strip()
@@ -444,7 +467,8 @@ def canonical_key(brand: str | None, name: str, category=None) -> str:
 # Words that make a different model, not a different listing of the same one.
 _MODEL_WORDS = {"pro", "max", "ultra", "plus", "lite", "fe", "mini", "neo", "prime", "edge", "se", "air",
                 "fold", "flip", "power", "play", "turbo", "speed", "go", "note", "s", "t", "r", "e", "x",
-                "i", "c", "a", "m", "v", "y", "g", "4g", "5g", "kids", "classic", "sport", "active"}
+                "i", "c", "a", "m", "v", "y", "g", "f", "fs", "4g", "5g", "kids", "classic", "sport", "active",
+                "smart", "unity", "touch", "slim", "flex", "vision", "gt"}
 
 
 def likely_same(key_a: str, key_b: str) -> bool:

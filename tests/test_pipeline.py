@@ -237,3 +237,21 @@ def test_processor_is_the_chip_not_the_core_layout():
            "Platform / Chipset": "Qualcomm SM7635 Snapdragon 7s Gen 3 (4 nm)"}
     assert normalize_specs(raw, Category.PHONE)["chipset"].startswith("Qualcomm SM7635")
     assert normalize_specs({"CPU": "Octa-core 2.2 GHz"}, Category.PHONE)["chipset"] == "Octa-core 2.2 GHz"
+
+
+@pytest.mark.parametrize("cat,a,b", [
+    (Category.PHONE, "Honor 600 Lite 5G: Stunning", "Honor 600 Lite"),
+    (Category.PHONE, "Apple iPhone 17 5G XDR", "Apple iPhone 17"),
+    (Category.PHONE, "Xiaomi 17T 5G Leica Telephoto", "Xiaomi 17T"),
+    (Category.EARBUDS, "Xiaomi Redmi Buds 8 True Wireless Earbuds Features", "Redmi Buds 8"),
+    (Category.CAMERA, "Logitech C270 HD Webcam for Clear Video Calls", "Logitech C270 HD WebCam"),
+])
+def test_page_title_leftovers_are_the_same_model(cat, a, b):
+    assert canonical_key(a.split()[0], a, cat) == canonical_key(b.split()[0], b, cat)
+
+
+def test_taglines_do_not_merge_different_models():
+    P = Category.PHONE
+    assert canonical_key("Samsung", "Samsung Galaxy S26 FE: 5G", P) != canonical_key("Samsung", "Samsung Galaxy S26", P)
+    assert canonical_key("Honor", "Honor X9c Smart 5G", P) != canonical_key("Honor", "Honor X9c 5G", P)
+    assert "iphone 16" in canonical_key("Spigen", "Spigen Case for iPhone 16", Category.CASE)

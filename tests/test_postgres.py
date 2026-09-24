@@ -188,3 +188,16 @@ def test_reparse_keeps_records_when_the_new_reading_lost_most_of_them(pg_url):
     assert q(pg_url, "SELECT count(*) AS n FROM raw.records WHERE source='shop'")[0]["n"] == 4
     [r] = reparse(s, entries, force=True, log_line=lambda _: None)
     assert r.replaced and q(pg_url, "SELECT count(*) AS n FROM raw.records WHERE source='shop'")[0]["n"] == 1
+
+
+def test_reparse_survives_sitemaps_and_xml_declared_pages(pg_url):
+    from devicescout.reparse import reparse
+    s = PgStore(pg_url)
+    _page(s, "gadgetbyte", "https://www.gadgetbytenepal.com/post-sitemap.xml",
+          '<?xml version="1.0" encoding="UTF-8"?><urlset><url><loc>https://x/a</loc></url></urlset>',
+          ctype="application/xml")
+    _page(s, "gadgetbyte", "https://www.gadgetbytenepal.com/zeta-z9-pro",
+          '<?xml version="1.0" encoding="UTF-8"?>' + _PRODUCT)
+    entries = [{"name": "gadgetbyte", "type": "jsonld", "base_url": "https://www.gadgetbytenepal.com", "region": "np"}]
+    [r] = reparse(s, entries, log_line=lambda _: None)
+    assert r.replaced and r.after == 1 and r.pages == 2

@@ -80,8 +80,17 @@ def _json(body: str):
 
 
 def _selector(body: str, url: str):
+    """A page to parse. Given as bytes: lxml refuses text that starts with an XML encoding
+    declaration (<?xml version="1.0" encoding="UTF-8"?>), which some stores send."""
     from scrapling.parser import Selector
-    return Selector(body, url=url)
+    return Selector(body.encode("utf-8"), url=url)
+
+
+def _not_a_page(url: str, body: str) -> bool:
+    """Sitemaps and feeds are saved too (they list the site's pages) but hold no product."""
+    head = body.lstrip()[:300].lower()
+    return (bool(re.search(r"sitemap[^/]*\.xml|/feed/?$|\.xml(\?|$)", url, re.I))
+            or "<urlset" in head or "<sitemapindex" in head or "<rss" in head)
 
 
 def _stamp(products: list[Product], when: str) -> list[Product]:
@@ -107,16 +116,20 @@ def site_products(src, pg, source: str, progress: Callable[[str], None] = lambda
         host = urlparse(src._base()).netloc
         for row in _pages(pg, source):
             n += 1
-            if _json(row["body"] or "") is not None:
+            body = row["body"] or ""
+            if _json(body) is not None or _not_a_page(row["url"], body):
                 continue
-            page = _selector(row["body"] or "", row["url"])
-            if src._is_listing(page):
-                words = urlparse(row["url"]).path.replace("-", " ").replace("/", " ")
-                for link in src._links(page, host) + src._embedded_links(page, host):
-                    if src._looks_like_product(link):
-                        src._hints.setdefault(src._canonical(link, True), words)
-            else:
-                product_ids.append(row["id"])
+            try:                         # one unreadable page never stops the run
+                page = _selector(body, row["url"])
+                if src._is_listing(page):
+                    words = urlparse(row["url"]).path.replace("-", " ").replace("/", " ")
+                    for link in src._links(page, host) + src._embedded_links(page, host):
+                        if src._looks_like_product(link):
+                            src._hints.setdefault(src._canonical(link, True), words)
+                else:
+                    product_ids.append(row["id"])
+            except Exception as e:
+                log.debug("%s: %s", row["url"], e)
             if n % 200 == 0:
                 progress(f"  {source}: {n} pages looked at")
         # Pass 2: every other page, read as a product page. (No URL filter: the crawl chose
@@ -137,6 +150,8 @@ def site_products(src, pg, source: str, progress: Callable[[str], None] = lambda
         when = row["last_seen_at"].isoformat(timespec="seconds")
         data = _json(body)
         got: list[Product] = []
+        if data is None and _not_a_page(url, body):
+            continue
         try:
             if isinstance(src, ShopifySource) and isinstance(data, dict):
                 m = re.search(r"/collections/([^/]+)/products\.json", url)
@@ -217,8 +232,14 @@ def reparse(store, entries: list[dict], only: list[str] | None = None, dry_run: 
             fields = SiteConfig.__dataclass_fields__
             src = GenericSource(SiteConfig(**{k: v for k, v in entry.items() if k in fields}))
         log_line(f"{source}: reading saved pages...")
-        res.pages, products = site_products(src, pg, source, log_line)
-        res.categories = Counter(p.category.value for p in products)
+        try:
+            res.pages, products = site_products(src, pg, source, log_line)
+        except Exception as e:           # one website's trouble doesn't stop the others
+            res.note = f"could not read its pages ({type(e).__name__}: {str(e)[:120]})"
+            log_line(res.line())
+            continue
+        latest = {p.url: p for p in products}          # one count per product, not per page version
+        res.categories = Counter(p.category.value for p in latest.values())
         res.after = len({(p.url, record_hash(p)) for p in products})
         if res.after == 0 and res.before:
             res.note = "new reading found nothing"

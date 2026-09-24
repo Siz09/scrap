@@ -83,7 +83,9 @@ cd web && npm run build                     # typecheck + build into devicescout
   For phones, tablets and watches it also cuts everything after the model, at the first bracket, comma,
   " - ", or spec/pitch word (mAh, MP, inch/", Snapdragon, Dimensity, AMOLED, Triple/Main Camera,
   Android 15, "Features and Specs", "with …"). It also drops a trailing "Smartphone"/"Mobile".
-  "(2024)" years are kept.
+  "(2024)" years are kept. Earbuds get the same cut. For every device, `clean_title` drops a colon tagline
+  ("Honor 600 Lite 5G: Stunning") and page words ("Features", "Overview", "Details"), and `model_name`
+  drops "for …" use-case tails except for cases, cables, chargers, accessories and power banks.
 - **`canonical_key`** is the merge key.
   - Removes RAM/storage, colours, 4G/5G and warranty text.
   - "+" becomes "plus", so S24+ stays apart from the S24.
@@ -166,8 +168,10 @@ og:image from the product's page, then to an SVG placeholder.
      SELECT count(*), count(*) FILTER (WHERE n>0), round(avg(n),1) FROM r;
      ```
 2. **Real product images from stores** haven't been confirmed to load in the owner's UI.
-3. **Old junk itti records** (category pages saved as products before the crawl fix): `reparse` removes
-   them. Built and tested on copies of saved pages; not yet run on the owner's database.
+3. **`reparse` on the owner's DB:** the first run replaced brother-mart (946 → 946), then crashed on gadgetbyte's
+   saved sitemap (XML declaration), so the catalogue wasn't rebuilt. Fixed: pages are parsed as bytes,
+   sitemaps/feeds skipped, and one site's error no longer stops the run. Needs a re-run to confirm;
+   the old junk itti records should disappear after it.
 4. **A GSMArena flip phone may show its cover-screen size** (4.1") as the main display. This is flagged
    as a spec conflict. It's unconfirmed which phone; ask the owner.
 5. Ideas offered but not requested: incremental price-only updates, parallel scraping per site.
