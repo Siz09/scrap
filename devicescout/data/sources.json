@@ -163,7 +163,8 @@
         "huawei"
       ],
       "pages": 2,
-      "notes": "Most complete phone/tablet/watch spec database. Specs only, no prices."
+      "notes": "Most complete phone/tablet/watch spec database. Specs only, no prices.",
+      "delay": 4
     },
     {
       "name": "notebookcheck",
@@ -201,7 +202,7 @@
       "notes": "Official India prices (NPR is pegged to INR at 1.6) to judge whether a Nepali price is fair. Enable after reviewing Samsung's terms."
     }
   ],
-  "defaults_version": 3,
+  "defaults_version": 4,
   "retired": [
     "daraz-np"
   ]

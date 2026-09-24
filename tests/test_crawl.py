@@ -302,9 +302,11 @@ def test_quick_sources_scrape_first_and_recent_checks_are_not_repeated():
 
     remember("hukut", {"platform": "unknown"})
     remember("brother-mart", {"platform": "shopify"})
-    entries = [{"name": "hukut"}, {"name": "gadgetbyte", "type": "jsonld"}, {"name": "brother-mart"},
-               {"name": "gsmarena", "type": "gsmarena"}]
-    assert [e["name"] for e in scrape_order(entries)] == ["brother-mart", "gsmarena", "gadgetbyte", "hukut"]
+    entries = [{"name": "gsmarena", "type": "gsmarena", "role": "specs"}, {"name": "hukut"},
+               {"name": "gadgetbyte", "type": "jsonld", "role": "reference"}, {"name": "brother-mart"},
+               {"name": "never-checked-store"}]
+    assert [e["name"] for e in scrape_order(entries)] == [
+        "brother-mart", "hukut", "never-checked-store", "gadgetbyte", "gsmarena"]
 
     assert not recently_checked(entries)
     for e in entries:

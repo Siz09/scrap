@@ -147,14 +147,18 @@ def run_check(entries: list[dict], log: Log = print, sample: int = 3, delay: flo
 _SPEED = {"shopify": 0, "woocommerce": 0, "daraz": 0, "gsmarena": 1, "jsonld": 2}
 
 
+_ROLE = {"offers": 0, "reference": 1, "specs": 2, "reviews": 3}
+
+
 def scrape_order(entries: list[dict]) -> list[dict]:
-    """Quick sources first (store APIs: a whole shop in minutes), whole-site browser walks
-    (hours) last, so data starts appearing right away."""
-    def speed(e):
+    """Stores first (prices are what the app is for), then listed-price sites, then spec and
+    review sites. Within each, quick sources first (store APIs: a whole shop in minutes) and
+    whole-site browser walks (hours) last, so data starts appearing right away."""
+    def key(e):
         kind = e.get("type", "auto")
         platform = cached_platform(e["name"]) if kind == "auto" else kind
-        return _SPEED.get(platform or "", 3)
-    return sorted(entries, key=speed)
+        return _ROLE.get(e.get("role", "offers"), 0), _SPEED.get(platform or "", 3)
+    return sorted(entries, key=key)
 
 
 def recently_checked(entries: list[dict], hours: float = 12) -> bool:
