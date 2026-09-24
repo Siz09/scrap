@@ -202,3 +202,11 @@ def test_sorting_by_price_keeps_devices_sold_only_abroad(client):
     assert "Himal Fold 2" in names and r["total"] == 9          # every phone, the import at its converted price
     prices = [p["best_price"] or p["converted_price"] for p in r["items"]]
     assert prices == sorted(prices)
+
+
+def test_advice_can_list_every_match(client):
+    few = client.post("/api/advise", json={"category": "phone", "uses": {"balanced": 1}}).json()
+    every = client.post("/api/advise", json={"category": "phone", "uses": {"balanced": 1}, "top": 500}).json()
+    assert len(few["picks"]) == 5 and len(every["picks"]) == every["considered"] > 5
+    assert [p["name"] for p in every["picks"][:5]] == [p["name"] for p in few["picks"]]   # same order at the top
+    assert all("best_listed_only" in p for p in every["picks"])

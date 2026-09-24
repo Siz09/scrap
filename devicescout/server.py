@@ -56,13 +56,13 @@ class NeedsIn(BaseModel):
     official_only: bool = False
     in_stock_only: bool = False
     nepal_only: bool = False       # only devices sold in Nepal (else converted prices abroad count too)
-    top: int = Field(default=5, ge=1, le=20)
+    top: int = Field(default=5, ge=1, le=500)
 
 
 class AskIn(BaseModel):
     q: str = Field(min_length=1, max_length=300)
     category: Category = Category.PHONE      # used when the text names no device type
-    top: int = Field(default=5, ge=1, le=20)
+    top: int = Field(default=5, ge=1, le=500)
 
 
 class SourceIn(BaseModel):
@@ -93,6 +93,8 @@ def summary(p: Product) -> dict[str, Any]:
         "converted_price": conv.price_npr if (conv := (None if p.available_in_nepal else p.converted_offer)) else None,
         "converted_from": {"price": conv.price, "currency": conv.currency, "seller": conv.seller} if conv else None,
         "best_seller": best.seller if best else None, "best_official": best.official if best else None,
+        # The cheapest price is a price a Nepali tech site lists (e.g. Gadgetbyte), not a shop's.
+        "best_listed_only": best.region == "np-ref" if best else None,
         "offer_count": len(p.local_offers()), "specs": p.specs,
         "sources": sorted({o.source for o in p.offers} | ({p.source} if p.source else set())),
     }

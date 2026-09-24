@@ -6,6 +6,8 @@ import PickCard from "./PickCard";
 
 type MustState = Record<string, number | boolean>;
 
+const TOP = 5;   // best picks shown first; every other match is listed below them
+
 const EXCLUDED_LABELS: Record<string, string> = {
   no_nepal_price: "not sold in Nepal",
   no_price: "with no price yet (can't check the budget)",
@@ -34,6 +36,7 @@ export default function Advisor() {
   const [understood, setUnderstood] = useState<string[] | null>(null);
   const [inStock, setInStock] = useState(false);
   const [nepalOnly, setNepalOnly] = useState(false);
+  const [moreShown, setMoreShown] = useState(20);   // matches beyond the top 5, shown 20 at a time
 
   const [advice, setAdvice] = useState<Advice | null>(null);
   const [loading, setLoading] = useState(false);
@@ -92,7 +95,7 @@ export default function Advisor() {
       category: cat.id, budget_min: budgetMin, budget_max: budgetMax,
       uses: uses.length ? weighted : { balanced: 1 }, os, must,
       brands, exclude_brands: excludeBrands,
-      official_only: officialOnly, in_stock_only: inStock, nepal_only: nepalOnly, top: 5,
+      official_only: officialOnly, in_stock_only: inStock, nepal_only: nepalOnly, top: 500,
     };
   }, [cat, budgetMin, budgetMax, uses, os, musts, brands, excludeBrands, officialOnly, inStock, nepalOnly]);
 
@@ -102,7 +105,7 @@ export default function Advisor() {
     setLoading(true);
     const t = setTimeout(() => {
       api.advise(request)
-        .then((a) => !cancelled && (setAdvice(a), setError(null)))
+        .then((a) => !cancelled && (setAdvice(a), setError(null), setMoreShown(20)))
         .catch((e) => !cancelled && setError(e.message))
         .finally(() => !cancelled && setLoading(false));
     }, 250);
@@ -288,10 +291,27 @@ export default function Advisor() {
 
             {advice.picks.length > 0 && (
               <ol className="picks">
-                {advice.picks.map((p, i) => (
+                {advice.picks.slice(0, TOP).map((p, i) => (
                   <li key={p.key}><PickCard pick={p} rank={i + 1} /></li>
                 ))}
               </ol>
+            )}
+
+            {advice.picks.length > TOP && (
+              <section className="more-picks">
+                <h3>More {cat.label.toLowerCase()} that fit ({advice.picks.length - TOP})</h3>
+                <p className="muted">Also match everything you asked for, ranked by how well they fit.</p>
+                <ol className="picks" start={TOP + 1}>
+                  {advice.picks.slice(TOP, TOP + moreShown).map((p, i) => (
+                    <li key={p.key}><PickCard pick={p} rank={TOP + i + 1} /></li>
+                  ))}
+                </ol>
+                {advice.picks.length > TOP + moreShown && (
+                  <button type="button" className="btn" onClick={() => setMoreShown((n) => n + 20)}>
+                    Show {Math.min(20, advice.picks.length - TOP - moreShown)} more
+                  </button>
+                )}
+              </section>
             )}
 
             {advice.value_pick && (

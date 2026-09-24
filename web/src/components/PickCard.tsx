@@ -34,7 +34,9 @@ export default function PickCard({ pick, rank, tone, savings }: {
           <div className="pick-price">
             <PriceTag local={pick.price_converted ? null : pick.price_npr} converted={pick.price_converted ? pick.price_npr : null}
                       from={pick.converted_from} available={pick.available_in_nepal} />
-            {pick.best_seller && !pick.price_converted && <span className="muted"> at {pick.best_seller}</span>}
+            {pick.best_seller && !pick.price_converted && (pick.best_listed_only
+              ? <span className="muted" title="A price a Nepali tech site publishes, not a shop's offer"> listed price ({pick.best_seller})</span>
+              : <span className="muted"> at {pick.best_seller}</span>)}
             {pick.best_official && <span className="badge good">Official</span>}
             {savings != null && savings > 0 && <span className="badge good">Save {npr(savings)}</span>}
           </div>

@@ -82,6 +82,7 @@ export interface Summary {
   converted_from: ConvertedFrom | null;
   best_seller: string | null;
   best_official: boolean | null;
+  best_listed_only?: boolean | null;
   offer_count: number;
   specs: Specs;
   sources: string[];

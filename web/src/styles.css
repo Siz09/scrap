@@ -372,3 +372,7 @@ tr.suspicious td:first-child a { text-decoration: line-through; }
   .device-img.lg { width: 100%; height: 220px; }
   .device-img.sm { width: 56px; height: 56px; }
 }
+
+.more-picks { margin-top: 2rem; }
+.more-picks h3 { margin-bottom: 0.2rem; }
+.more-picks .btn { margin-top: 0.75rem; }
