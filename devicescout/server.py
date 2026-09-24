@@ -431,11 +431,11 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
         return job
 
     @app.post("/api/jobs/cancel")
-    def cancel_job(x_admin_key: str | None = Header(default=None)):
+    def cancel_job(x_admin_key: str | None = Header(default=None), job_id: str | None = None):
         _authorize(x_admin_key)
         s = store()
         try:
-            return {"ok": True, "cancelled": s.request_cancel()}
+            return {"ok": True, "cancelled": s.request_cancel(job_id)}
         finally:
             s.close()
 

@@ -474,12 +474,13 @@ class PgStore(Store):
 
     # --- job queue -------------------------------------------------------------------
 
-    def claim_job(self) -> dict | None:
+    def claim_job(self, job_id: str | None = None, exclude_origin: str | None = None) -> dict | None:
+        where, args = self._claim_filter(job_id, exclude_origin)
         row = self.pg.execute(
-            """UPDATE ops.jobs SET status = 'running', started_at = now()
-               WHERE id = (SELECT id FROM ops.jobs WHERE status = 'queued' ORDER BY created_at
-                           LIMIT 1 FOR UPDATE SKIP LOCKED)
-               RETURNING id""").fetchone()
+            f"""UPDATE ops.jobs SET status = 'running', started_at = now()
+                WHERE id = (SELECT id FROM ops.jobs WHERE {where.replace('?', '%s')} ORDER BY created_at
+                            LIMIT 1 FOR UPDATE SKIP LOCKED)
+                RETURNING id""", args).fetchone()
         return self.job(row["id"]) if row else None
 
 

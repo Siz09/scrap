@@ -298,58 +298,64 @@ def cmd_schedule(args) -> None:
     def heartbeat() -> None:
         store.set_kv("worker_heartbeat", datetime.now(timezone.utc).isoformat(timespec="seconds"))
 
-    def run(kind: str, origin: str) -> None:
-        # Scheduled runs go through the same queue, so the website shows their progress too.
-        store.enqueue_job(kind, [], args.limit, origin=origin)
-        drain()
+    def run_job(job: dict) -> None:
+        say(f"{job['kind']} job {job['id']} ({job['origin']}) started")
+        status = execute(job, args.db, args.sources, fetcher_factory=Fetcher)   # prints its log as it goes
+        say(f"{job['kind']} job {job['id']} {status}")
 
     def drain() -> None:
-        while not stop.is_set() and (job := store.claim_job()):
-            say(f"{job['kind']} job {job['id']} ({job['origin']}) started")
-            status = execute(job, args.db, args.sources, fetcher_factory=Fetcher)
-            for line in (store.job(job["id"]) or {}).get("log", [])[-3:]:
-                say("  " + line)
-            say(f"{job['kind']} job {job['id']} {status}")
+        """Jobs started from the website: run right away, even while a scheduled scrape
+        (hours long) is going on in its own lane."""
+        while not stop.is_set() and (job := store.claim_job(exclude_origin="schedule")):
+            run_job(job)
             heartbeat()
 
-    def keep_alive() -> None:
-        # Own connection: a job can hold the main one busy for minutes (browser pages).
-        beat = open_store(args.db)
-        while not stop.wait(30):
+    def scheduled(kinds: list[str]) -> threading.Thread:
+        """The scheduled run, in its own lane (thread + database connection). It still goes
+        through the job queue, so the website shows its progress."""
+        def lane() -> None:
+            own = open_store(args.db)
             try:
-                beat.set_kv("worker_heartbeat", datetime.now(timezone.utc).isoformat(timespec="seconds"))
-            except Exception:
-                pass
-    threading.Thread(target=keep_alive, daemon=True, name="heartbeat").start()
+                for kind in kinds:
+                    if stop.is_set():
+                        break
+                    queued = own.enqueue_job(kind, [], args.limit, origin="schedule")
+                    job = own.claim_job(job_id=queued["id"])
+                    if job:
+                        run_job(job)
+            finally:
+                own.close()
+        t = threading.Thread(target=lane, daemon=True, name="scheduled-run")
+        t.start()
+        return t
 
-    from .sources.backends import describe
-    store.set_kv("worker_scrapers", json.dumps(describe()))   # what *this* container can run, for the website
-    heartbeat()
-    if args.start_in:
-        say(f"first scheduled run in {args.start_in / 3600:.1f} h; watching for jobs from the website")
-        begin = time.monotonic() + args.start_in
-        while not stop.is_set() and time.monotonic() < begin:
-            heartbeat()
-            drain()
-            stop.wait(5)
     from .jobs import recently_checked, select_entries
-    if args.check_first and not stop.is_set():
+    first = ["scrape"]
+    if args.check_first:
         if recently_checked(select_entries(args.sources, [])):
             say("all sources were checked in the last 12 h; going straight to scraping")
         else:
-            run("check", "schedule")
+            first = ["check", "scrape"]
+    next_run = time.monotonic() + args.start_in
+    if args.start_in:
+        say(f"first scheduled run in {args.start_in / 3600:.1f} h; watching for jobs from the website")
+    lane: threading.Thread | None = None
     while not stop.is_set():
-        run("scrape", "schedule")
-        if stop.is_set():
-            break
-        if args.once:
-            break
-        next_run = time.monotonic() + args.every + random.uniform(0, args.jitter)
-        say(f"next scheduled scrape in {(next_run - time.monotonic()) / 3600:.1f} h; watching for jobs from the website")
-        while not stop.is_set() and time.monotonic() < next_run:
-            heartbeat()
-            drain()
-            stop.wait(5)
+        if lane is None and time.monotonic() >= next_run:
+            lane = scheduled(first)
+            first = ["scrape"]
+        if lane is not None and not lane.is_alive():
+            lane = None
+            if args.once:
+                break
+            next_run = time.monotonic() + args.every + random.uniform(0, args.jitter)
+            say(f"next scheduled scrape in {(next_run - time.monotonic()) / 3600:.1f} h; "
+                "watching for jobs from the website")
+        heartbeat()
+        drain()
+        stop.wait(2)
+    if lane is not None:
+        lane.join(timeout=30)
     say("scheduler stopped")
 
 

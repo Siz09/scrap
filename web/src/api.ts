@@ -320,7 +320,8 @@ export const api = {
     request<Job>("/api/jobs", { method: "POST", headers: adminHeaders(), body: JSON.stringify({ kind, names, limit }) }),
   job: (id: string) => request<Job>(`/api/jobs/${id}`),
   jobs: () => request<{ jobs: Job[]; worker_seen_at: string | null; jobs_mode: string }>("/api/jobs"),
-  cancelJob: () => request<{ ok: boolean }>("/api/jobs/cancel", { method: "POST", headers: adminHeaders() }),
+  cancelJob: (id?: string) => request<{ ok: boolean }>(`/api/jobs/cancel${id ? `?job_id=${encodeURIComponent(id)}` : ""}`,
+                                                      { method: "POST", headers: adminHeaders() }),
   addSource: (url: string, role: string) =>
     request<{ source: SourceRow; job: Job | null }>("/api/sources", {
       method: "POST", headers: adminHeaders(), body: JSON.stringify({ url, role }),

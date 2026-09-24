@@ -43,10 +43,16 @@ def clear_interrupted() -> None:
         source_status().write_text(json.dumps(data, indent=2))
 
 
+_STATUS_LOCK = threading.Lock()   # the scheduled run and jobs from the website update it side by side
+
+
 def _save_status(name: str, **fields) -> None:
-    data = load_status()
-    data[name] = {**data.get(name, {}), **fields}
-    source_status().write_text(json.dumps(data, indent=2))
+    with _STATUS_LOCK:
+        data = load_status()
+        data[name] = {**data.get(name, {}), **fields}
+        tmp = source_status().with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2))
+        tmp.replace(source_status())
 
 
 CHECK_BROWSE_PAGES = 25   # a check samples a source: it shouldn't walk a whole site looking for products

@@ -20,7 +20,8 @@ export default function Sources() {
   const [file, setFile] = useState("");
   const [scrapers, setScrapers] = useState<ScraperInfo[]>([]);
   const [quality, setQuality] = useState<Quality | null>(null);
-  const [job, setJob] = useState<Job | null>(null);
+  const [jobs, setJobs] = useState<Job[]>([]);
+  const [viewId, setViewId] = useState<string | null>(null);   // the job shown in the panel
   const [workerSeen, setWorkerSeen] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [key, setKey] = useState(adminKey());
@@ -38,8 +39,7 @@ export default function Sources() {
     api.quality().then(setQuality).catch(() => setQuality(null));
     api.jobs().then((r) => {
       setWorkerSeen(r.worker_seen_at);
-      // Show the job that is running or queued; otherwise the most recent one.
-      setJob(r.jobs.find((j) => j.status === "running") ?? r.jobs.find((j) => j.status === "queued") ?? r.jobs[0] ?? null);
+      setJobs(r.jobs);
     }).catch(() => undefined);
   }, []);
   useEffect(load, [load]);
@@ -50,7 +50,15 @@ export default function Sources() {
     api.verifyAdmin(key).then(() => setUnlocked(true)).catch(() => { setAdminKey(""); setKey(""); setUnlocked(false); });
   }, [meta.jobs_mode, key]);
 
-  const active = job?.status === "running" || job?.status === "queued" || rows.some((r) => r.check === "RUNNING" || r.scrape_running);
+  // Several jobs can run at once: the scheduled scrape in its own lane, plus checks/updates
+  // started here. The panel shows the one picked (default: the newest running or queued).
+  const isActive = (j: Job) => j.status === "running" || j.status === "queued";
+  const activeJobs = jobs.filter(isActive);
+  const job = jobs.find((j) => j.id === viewId) ?? activeJobs[0] ?? jobs[0] ?? null;
+  const active = activeJobs.length > 0 || rows.some((r) => r.check === "RUNNING" || r.scrape_running);
+  const allSourcesBusy = (kind: string) => activeJobs.some((j) => j.kind === kind && j.names.length === 0);
+  const sourceBusy = (r: SourceRow) =>
+    r.check === "RUNNING" || !!r.scrape_running || activeJobs.some((j) => j.names.includes(r.name));
 
   // Live updates while anything is running (including scheduled runs started by the scraper container).
   useEffect(() => {
@@ -90,7 +98,7 @@ export default function Sources() {
     try {
       const r = await api.addSource(newUrl.trim(), newRole);
       setNewUrl("");
-      if (r.job) setJob(r.job);
+      if (r.job) { setJobs((js) => [r.job!, ...js]); setViewId(r.job.id); }
       load();
     } catch (err) {
       onAuthError(err);
@@ -109,7 +117,9 @@ export default function Sources() {
   async function start(kind: "check" | "scrape", names: string[] = []) {
     setError(null);
     try {
-      setJob(await api.startJob(kind, names));
+      const started = await api.startJob(kind, names);
+      setJobs((js) => [started, ...js.filter((j) => j.id !== started.id)]);
+      setViewId(started.id);
     } catch (e) {
       onAuthError(e);
     }
@@ -119,7 +129,7 @@ export default function Sources() {
   const count = (s: string) => enabled.filter((r) => r.check === s).length;
   const unchecked = enabled.filter((r) => !r.check).length;
   const canRun = meta.jobs_mode !== "off" && (!meta.admin_required || unlocked);
-  const busy = job?.status === "running" || job?.status === "queued";
+  const busy = !!job && isActive(job);
   const p = job?.progress ?? {};
   const pct = p.total ? Math.round(((p.done ?? 0) / p.total) * 100) : 0;
   const workerAge = workerSeen ? (Date.now() - new Date(workerSeen).getTime()) / 1000 : Infinity;
@@ -143,8 +153,8 @@ export default function Sources() {
         </div>
         {canRun && (
           <div className="actions">
-            <button type="button" className="btn ghost" disabled={busy} onClick={() => start("check")}>Check sources</button>
-            <button type="button" className="btn primary" disabled={busy} onClick={() => start("scrape")}>Update prices</button>
+            <button type="button" className="btn ghost" disabled={allSourcesBusy("check")} onClick={() => start("check")}>Check sources</button>
+            <button type="button" className="btn primary" disabled={allSourcesBusy("scrape")} onClick={() => start("scrape")}>Update prices</button>
           </div>
         )}
       </div>
@@ -198,14 +208,26 @@ export default function Sources() {
         <section className="panel job">
           <div className="job-head">
             <h2>
-              {job.kind === "check" ? "Checking sources" : "Updating prices"}
+              {job.kind === "check" ? "Checking" : "Updating"} {job.names.length ? job.names.join(", ") : "all sources"}
               {job.origin === "schedule" && <span className="muted small"> (scheduled)</span>}{" "}
               <span className={`badge ${job.status === "done" ? "good" : job.status === "failed" ? "low" : ""}`}>
                 {job.status === "queued" ? "waiting for the scraper" : job.status}
               </span>
             </h2>
-            {busy && canRun && <button type="button" className="btn ghost small" onClick={() => api.cancelJob().then(load)}>Stop</button>}
+            {busy && canRun && <button type="button" className="btn ghost small" onClick={() => api.cancelJob(job.id).then(load)}>Stop</button>}
           </div>
+          {activeJobs.filter((j) => j.id !== job.id).length > 0 && (
+            <p className="muted small">
+              Also running:{" "}
+              {activeJobs.filter((j) => j.id !== job.id).map((j) => (
+                <button key={j.id} type="button" className="link small" onClick={() => setViewId(j.id)}>
+                  {j.kind === "check" ? "Check" : "Update"} {j.names.length ? j.names.join(", ") : "all sources"}
+                  {j.origin === "schedule" ? " (scheduled)" : ""}
+                  {j.progress.total ? ` · ${j.progress.done ?? 0}/${j.progress.total}` : ""}
+                </button>
+              ))}
+            </p>
+          )}
           {busy && p.total ? (
             <div className="progress" role="progressbar" aria-valuemin={0} aria-valuemax={p.total} aria-valuenow={p.done ?? 0}>
               <div className="progress-bar" style={{ width: `${pct}%` }} />
@@ -298,8 +320,8 @@ export default function Sources() {
                   </td>
                   {canRun && (
                     <td className="row-actions">
-                      <button type="button" className="link small" disabled={busy || !r.enabled} onClick={() => start("check", [r.name])}>Check</button>
-                      <button type="button" className="link small" disabled={busy || !r.enabled} onClick={() => start("scrape", [r.name])}>Update</button>
+                      <button type="button" className="link small" disabled={sourceBusy(r) || !r.enabled} onClick={() => start("check", [r.name])}>Check</button>
+                      <button type="button" className="link small" disabled={sourceBusy(r) || !r.enabled} onClick={() => start("scrape", [r.name])}>Update</button>
                       <button type="button" className="link small" onClick={() => toggle(r)}>{r.enabled ? "Disable" : "Enable"}</button>
                       <button type="button" className="link small danger" onClick={() => remove(r)}>Remove</button>
                     </td>

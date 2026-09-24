@@ -210,3 +210,16 @@ def test_advice_can_list_every_match(client):
     assert len(few["picks"]) == 5 and len(every["picks"]) == every["considered"] > 5
     assert [p["name"] for p in every["picks"][:5]] == [p["name"] for p in few["picks"]]   # same order at the top
     assert all("best_listed_only" in p for p in every["picks"])
+
+
+def test_website_jobs_run_beside_the_scheduled_scrape(tmp_path):
+    """A scheduled full scrape takes hours; Check/Update from the page must not wait for it."""
+    from devicescout.storage import Store
+    s = Store(tmp_path / "x.db")
+    sched = s.enqueue_job("scrape", [], None, origin="schedule")
+    mine = s.enqueue_job("check", ["hukut"], None, origin="ui")
+    assert s.claim_job(exclude_origin="schedule")["id"] == mine["id"]      # the website's lane
+    assert s.claim_job(exclude_origin="schedule") is None
+    assert s.claim_job(job_id=sched["id"])["id"] == sched["id"]            # the scheduler's own lane
+    s.request_cancel(mine["id"])
+    assert s.job(mine["id"])["cancel_requested"] and not s.job(sched["id"])["cancel_requested"]
