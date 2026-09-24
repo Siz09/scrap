@@ -291,6 +291,9 @@ def cmd_schedule(args) -> None:
     from .jobs import clear_interrupted
     clear_interrupted()
     _import_legacy(store)
+    for old in store.jobs(limit=500):   # a scheduled run left waiting by the last container: the new one replaces it
+        if old["origin"] == "schedule" and old["status"] == "queued":
+            store.request_cancel(old["id"])
 
     def say(line: str) -> None:
         print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}", flush=True)
@@ -303,32 +306,6 @@ def cmd_schedule(args) -> None:
         status = execute(job, args.db, args.sources, fetcher_factory=Fetcher)   # prints its log as it goes
         say(f"{job['kind']} job {job['id']} {status}")
 
-    def drain() -> None:
-        """Jobs started from the website: run right away, even while a scheduled scrape
-        (hours long) is going on in its own lane."""
-        while not stop.is_set() and (job := store.claim_job(exclude_origin="schedule")):
-            run_job(job)
-            heartbeat()
-
-    def scheduled(kinds: list[str]) -> threading.Thread:
-        """The scheduled run, in its own lane (thread + database connection). It still goes
-        through the job queue, so the website shows its progress."""
-        def lane() -> None:
-            own = open_store(args.db)
-            try:
-                for kind in kinds:
-                    if stop.is_set():
-                        break
-                    queued = own.enqueue_job(kind, [], args.limit, origin="schedule")
-                    job = own.claim_job(job_id=queued["id"])
-                    if job:
-                        run_job(job)
-            finally:
-                own.close()
-        t = threading.Thread(target=lane, daemon=True, name="scheduled-run")
-        t.start()
-        return t
-
     from .jobs import recently_checked, select_entries
     first = ["scrape"]
     if args.check_first:
@@ -339,23 +316,28 @@ def cmd_schedule(args) -> None:
     next_run = time.monotonic() + args.start_in
     if args.start_in:
         say(f"first scheduled run in {args.start_in / 3600:.1f} h; watching for jobs from the website")
-    lane: threading.Thread | None = None
+    # One job at a time, oldest first: the scheduled run and anything started from the website
+    # share one line, so only one website is ever being scraped.
+    scheduled: list[str] = []          # ids of the scheduled run's jobs not finished yet
     while not stop.is_set():
-        if lane is None and time.monotonic() >= next_run:
-            lane = scheduled(first)
+        if not scheduled and next_run is not None and time.monotonic() >= next_run:
+            scheduled = [store.enqueue_job(k, [], args.limit, origin="schedule")["id"] for k in first]
             first = ["scrape"]
-        if lane is not None and not lane.is_alive():
-            lane = None
-            if args.once:
-                break
-            next_run = time.monotonic() + args.every + random.uniform(0, args.jitter)
-            say(f"next scheduled scrape in {(next_run - time.monotonic()) / 3600:.1f} h; "
-                "watching for jobs from the website")
+        job = store.claim_job()
+        if job:
+            run_job(job)
         heartbeat()
-        drain()
-        stop.wait(2)
-    if lane is not None:
-        lane.join(timeout=30)
+        if scheduled:
+            scheduled = [i for i in scheduled
+                         if (j := store.job(i)) and j["status"] in ("queued", "running")]
+            if not scheduled:          # the scheduled run is over (finished or stopped)
+                if args.once:
+                    break
+                next_run = time.monotonic() + args.every + random.uniform(0, args.jitter)
+                say(f"next scheduled scrape in {(next_run - time.monotonic()) / 3600:.1f} h; "
+                    "watching for jobs from the website")
+        if not job:
+            stop.wait(2)
     say("scheduler stopped")
 
 
@@ -391,6 +373,18 @@ def cmd_reprocess(args) -> None:
     from .pipeline import reprocess
     stats = reprocess(open_store(args.db))
     print("rebuilt catalogue from raw records: " + stats.line())
+
+
+def cmd_reparse(args) -> None:
+    from .reparse import reparse
+    from .sources import load_entries
+    store = open_store(args.db)
+    if args.dry_run:
+        print("dry run: nothing is changed\n")
+    results = reparse(store, load_entries(args.sources), only=args.names or None,
+                      dry_run=args.dry_run, force=args.force)
+    if not results:
+        print("no saved pages yet: they are kept from the first scrape after the PostgreSQL switch")
 
 
 def cmd_quality(args) -> None:
@@ -497,6 +491,28 @@ def _inspect_specs(src, page, blobs) -> None:
         i = body.lower().find("battery")
         print("Next.js page data in scripts: yes"
               + (f"; around 'battery': {' '.join(body[max(0, i - 200):i + 200].split())!r}" if i >= 0 else ""))
+
+
+def cmd_duplicates(args) -> None:
+    """Cards that are probably the same device listed twice, for fixing the matching rules."""
+    from collections import defaultdict
+
+    from .normalize import likely_same
+    store = open_store(args.db)
+    by_cat: dict[str, list] = defaultdict(list)
+    for p in store.products():
+        by_cat[p.category.value].append(p)
+    found = 0
+    for cat, items in sorted(by_cat.items()):
+        items.sort(key=lambda p: p.key or "")
+        for i, a in enumerate(items):
+            for b in items[i + 1:]:
+                if not (b.key or "").startswith((a.key or "").split(" ")[0]):
+                    break                       # sorted by key: past this brand
+                if likely_same(a.key or "", b.key or ""):
+                    found += 1
+                    print(f"{cat:<11} {a.name!r} ({a.key})\n{'':<11} {b.name!r} ({b.key})\n")
+    print(f"{found} likely duplicate pair(s)." + ("" if found else " Cards look distinct."))
 
 
 def cmd_scrapers(args) -> None:
@@ -651,6 +667,15 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("url")
     s.add_argument("--show", type=int, default=8, help="example links to print")
     s.set_defaults(func=cmd_inspect)
+
+    s = sub.add_parser("reparse", help="read the saved pages again with the current parsers, then rebuild the catalogue")
+    s.add_argument("names", nargs="*", help="only these websites (default: all with saved pages)")
+    s.add_argument("--dry-run", action="store_true", help="show what would change, change nothing")
+    s.add_argument("--force", action="store_true", help="replace a website's records even if the new reading has far fewer")
+    s.set_defaults(func=cmd_reparse)
+
+    s = sub.add_parser("duplicates", help="cards that are probably the same device listed twice")
+    s.set_defaults(func=cmd_duplicates)
 
     s = sub.add_parser("raw", help="what the raw layer holds per website (pages fetched, records parsed)")
     s.set_defaults(func=cmd_raw)

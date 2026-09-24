@@ -5,6 +5,8 @@ import { formatSpec, npr, relTime } from "../format";
 import PriceTag, { money } from "./PriceTag";
 import DeviceImage from "./DeviceImage";
 
+const SPEC_GROUP_ORDER = ["Display", "Platform", "Memory", "Camera", "Battery", "Build", "Connectivity", "Reviews", "Other"];
+
 export default function ProductDetail({ productKey }: { productKey: string }) {
   const { meta, compare, toggleCompare } = useApp();
   const [p, setP] = useState<Detail | null>(null);
@@ -18,11 +20,17 @@ export default function ProductDetail({ productKey }: { productKey: string }) {
   if (error) return <div className="empty"><h2>Not found</h2><p>{error}</p></div>;
   if (!p) return <div className="loading">Loading…</div>;
 
-  const groups = new Map<string, string[]>();
-  for (const k of Object.keys(p.specs)) {
+  // One list, top to bottom, in a fixed order: the sections, and the specs inside each, in the
+  // order the server lists them (a spec sheet reads the same on every device).
+  const known = Object.keys(meta.specs);
+  const keys = [...known.filter((k) => k in p.specs), ...Object.keys(p.specs).filter((k) => !(k in meta.specs))];
+  const byGroup = new Map<string, string[]>();
+  for (const k of keys) {
     const g = meta.specs[k]?.group ?? "Other";
-    groups.set(g, [...(groups.get(g) ?? []), k]);
+    byGroup.set(g, [...(byGroup.get(g) ?? []), k]);
   }
+  const rank = (g: string) => { const i = SPEC_GROUP_ORDER.indexOf(g); return i < 0 ? SPEC_GROUP_ORDER.length : i; };
+  const groups = new Map([...byGroup].sort(([a], [b]) => rank(a) - rank(b)));
   const local = p.offers.filter((o) => o.region !== "intl");
   const intl = p.offers.filter((o) => o.region === "intl" && o.price != null);
   const inCompare = compare.includes(p.key);

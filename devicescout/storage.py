@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .models import Category, Offer, Product
-from .normalize import canonical_key, clean_title
+from .normalize import canonical_key, clean_title, model_name
 from .pricing import flag_suspicious
 
 SOURCE_PRIORITY = {"gsmarena": 10}  # everything else defaults to 0
@@ -182,7 +182,7 @@ class Store:
             row = self.db.execute("SELECT key FROM products WHERE gtin = ?", (p.gtin,)).fetchone()
             if row:
                 return row["key"]
-        return canonical_key(p.brand, p.name)
+        return canonical_key(p.brand, p.name, p.category)
 
     def upsert(self, p: Product) -> str:
         key = self._key_for(p)
@@ -201,7 +201,7 @@ class Store:
                                "sources disagree: " + ", ".join(f"{s}={v}" for s, v in cands.items()))
         if row is None:
             raw = {p.source: p.raw_specs}
-            category, name, brand = p.category, p.name, p.brand
+            category, name, brand = p.category, model_name(p.name, p.category), p.brand
             rating, reviews, image = p.rating, p.review_count, p.image
             primary_source, primary_url = p.source, p.url
         else:
@@ -211,7 +211,13 @@ class Store:
             if category == Category.UNKNOWN:
                 category = p.category
             use_new = prio > SOURCE_PRIORITY.get(row["primary_source"], 0)
-            name = p.name if use_new else row["name"]
+            # Cards show the model name, not a store's title ('OnePlus 12', not 'OnePlus 12 5G
+            # 54000mAh 50MP ... Smartphone'); between equal sources the plainer one wins.
+            new_name = model_name(p.name, category)
+            name = new_name if use_new else row["name"]
+            if not use_new and prio == SOURCE_PRIORITY.get(row["primary_source"], 0) \
+                    and len(new_name) < len(name):
+                name = new_name
             brand = row["brand"] or p.brand
             primary_source = p.source if use_new else row["primary_source"]
             primary_url = p.url if use_new else row["primary_url"]
@@ -301,6 +307,10 @@ class Store:
 
     def record_page(self, source, url, status, scraper, content_type, body) -> None:
         """Raw pages are kept by the PostgreSQL store only (SQLite is for trying things out)."""
+
+    def pages_since(self, source: str, since: str) -> set[str]:
+        """Pages are kept by the PostgreSQL store only: nothing to resume from here."""
+        return set()
 
     def raw_summary(self) -> list[dict]:
         return [dict(r) for r in self.db.execute(

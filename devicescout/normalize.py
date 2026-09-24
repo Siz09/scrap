@@ -164,6 +164,9 @@ _LABELS: dict[str, tuple[str, ...]] = {
 }
 
 
+_CORE_LAYOUT = re.compile(r"\s*(?:single|dual|quad|hexa|octa|deca|\d+)[- ]?core\b|\s*\d+\s*x\s*\d", re.I)
+
+
 def _match(label: str, key: str) -> bool:
     # Word-boundary match so "os" hits "Platform / OS" but not "Positioning".
     lab = label.lower()
@@ -193,13 +196,17 @@ def normalize_specs(raw: dict[str, str], category: Category) -> dict[str, Any]:
                 specs["has_gps"] = not re.match(r"\s*(no|none)\b", v, re.I)
             elif re.search(r"\bGPS\b", v):
                 specs["has_gps"] = True
-        elif _match(label, "os") and "os" not in specs:
+        elif _match(label, "os") and "os" not in specs and not _match(label, "chipset") and not _match(label, "gpu"):
             if (os_name := parse_os(v)):
                 specs["os"] = os_name
             if (n := parse_os_upgrades(v)):
                 specs["os_upgrades"] = n
-        elif _match(label, "chipset") and "chipset" not in specs:
-            specs["chipset"] = v.split("\n")[0][:120]
+        elif _match(label, "chipset"):
+            # 'Chipset: Snapdragon 7s Gen 3' beats 'CPU: Octa-core (1x2.8 GHz Cortex-720 ...)':
+            # a core layout names no chip, so it is only kept when nothing better turns up.
+            first = v.split("\n")[0][:120]
+            if "chipset" not in specs or (_CORE_LAYOUT.match(specs["chipset"]) and not _CORE_LAYOUT.match(first)):
+                specs["chipset"] = first
         elif _match(label, "gpu") and "gpu" not in specs:
             specs["gpu"] = v[:120]
         elif _match(label, "refresh"):
@@ -339,30 +346,141 @@ _TITLE_JUNK = re.compile(
 _PRICE_ARTICLE = re.compile(r"\s+(price\s+in\s+nepal|price\s*&\s*specs|full\s+specifications)\b.*$", re.I)
 
 
+# Words a page title adds after the product: 'Xiaomi Redmi Buds 8 Features', 'DJI Osmo Action 6 Overview'.
+_PAGE_WORDS = re.compile(r"(?:\s+(?:features(?:\s+(?:and|&)\s+specs)?|overview|details|specs|specifications|"
+                         r"full\s+specs|review))+\s*$", re.I)
+# A colon starts a tagline: 'Honor 600 Lite 5G: Stunning ...', 'Galaxy S26 FE: 5G'.
+_TAGLINE = re.compile(r"\s*:(?:\s.*)?$")
+
+
 def clean_title(name: str) -> str:
-    """Drop listing tails: ' - 1 Year Warranty', ' | Free Gift', ' Price in Nepal, Specs'."""
+    """Drop listing tails: ' - 1 Year Warranty', ' | Free Gift', ' Price in Nepal, Specs',
+    ': Stunning display ...', ' Features'."""
     name = _PRICE_ARTICLE.sub("", name)
-    return re.sub(r"\s+", " ", _TITLE_TAIL.sub("", name)).strip()
+    name = _TITLE_TAIL.sub("", name)
+    head = _TAGLINE.sub("", name)
+    if len(head.split()) >= 2:
+        name = head
+    head = _PAGE_WORDS.sub("", name)
+    if len(head.split()) >= 2:
+        name = head
+    return re.sub(r"\s+", " ", name).strip()
 
 
-def canonical_key(brand: str | None, name: str) -> str:
-    """A key that collapses storage/colour/carrier/listing-noise variants of one model.
+# Where a phone/tablet/watch listing's model name ends and its sales pitch begins:
+# 'OnePlus 12 5G 54000mAh 50MP Triple Main Camera Smartphone', 'Galaxy A56 6.7" AMOLED ...',
+# 'Redmi Note 14 Pro MediaTek Dimensity 7300', 'Nord 6 5G Features and Specs'. Store titles for these
+# devices are model + specs in some order; the model always comes first.
+_PITCH = re.compile(
+    r"\s(?:\d+(?:\.\d+)?\s*-?\s*(?:mah|mp|w|hz|inch(?:es)?|\"|''|”|nits|cm|mm\s+display)(?![a-z0-9])|"
+    r"\d+\s*(?:gb|tb)\b|\d{1,2}\s*[/+]\s*\d{2,4}\s*(?:gb|tb)?\b|"
+    r"(?:qualcomm|snapdragon|dimensity|mediatek|helio|exynos|tensor|kirin|unisoc|bionic|a\d{2}\s+bionic|"
+    r"sony\s+lyt|octa[- ]?core|triple|quad|dual\s+camera|dual\s+rear|main\s+camera|rear\s+camera|battery|"
+    r"processor|chipset|features|specs|specifications|amoled|oled|lcd|display|screen|"
+    r"android\s+\d+|ios\s+\d+|ai\b|nfc|fast\s+charg|charging|with\b|in\s+nepal|xdr|super\s+retina|"
+    r"leica|lecia|hasselblad|zeiss|telephoto)(?:\b|(?=[®™])))",
+    re.I,
+)
+_PITCH_CATEGORIES = {"phone", "tablet", "smartwatch", "earbuds"}
+# Products whose "for ..." names what they fit: kept whole.
+_FITS_SOMETHING = {"case", "cable", "charger", "accessory", "power_bank", "unknown", None}
+# 'Nord CE5' = 'Nord CE 5', 'Fold6' = 'Fold 6', 'iPhone16' = 'iPhone 16', 'HOT60' = 'HOT 60'
+# (a series word of 2+ letters glued to its number; single letters like 'A56', 'S24' stay).
+_JOINED_NUMBER = re.compile(r"\b([a-z]{2,})(\d)", re.I)
+# Sub-brands sold under their own name, and model families that name their maker.
+_SUB_BRANDS = ("redmi", "poco", "iqoo", "honor", "nothing", "cmf")
+_FAMILY_BRAND = (("iphone", "apple"), ("ipad", "apple"), ("macbook", "apple"), ("airpods", "apple"),
+                 ("apple watch", "apple"), ("galaxy", "samsung"), ("pixel", "google"), ("nord", "oneplus"))
+
+
+def model_name(name: str, category=None) -> str:
+    """The model part of a listing title, cleaned for showing on a card.
+
+    Every device: listing tails and trademark signs go ('- 1 Year Warranty', '®').
+    Phones, tablets and watches also lose what follows the model: '(8GB/256GB)', ', 50MP Camera',
+    '6.7" AMOLED', '5000mAh', 'Snapdragon ...', 'Smartphone' ('Moto G (2024)' keeps its year).
+    Other devices are left whole: in '20000mAh 165W Power Bank' the numbers ARE the model."""
+    name = re.sub(r"[®™©]", " ", clean_title(name))
+    name = re.sub(r"\s+", " ", name).strip()
+    cat = getattr(category, "value", category)
+    if cat not in _FITS_SOMETHING:          # 'Webcam for Clear Video Calls'; not 'Case for iPhone 16'
+        head = re.sub(r"\s+for\s+.*$", "", name, flags=re.I)
+        if len(head.split()) >= 2:
+            name = head
+    if cat not in _PITCH_CATEGORIES:
+        return name
+    name = re.sub(r"\((20\d\d)\)", r"\1", name)          # a year in brackets is part of the model
+    cut = len(name)
+    m = _PITCH.search(name)
+    if m:
+        cut = m.start()
+    b = re.search(r"\s*[(\[,]|\s+[-–|]\s", name)            # '(8/256)', ', 50MP ...', ' - ...'
+    if b:
+        cut = min(cut, b.start())
+    head = name[:cut].strip()
+    if len(head.split()) < 2:                               # keep at least brand + model
+        return name
+    head = re.sub(r"(?:\s+(?:smart\s*phone|mobile(?:\s+phone)?|phone|tablet|smart\s*watch|dual\s+sim|"
+                  r"(?:true\s+)?wireless(?:\s+(?:earbuds|earphones|headphones))?|earbuds|earphones|tws))+$", "",
+                  head, flags=re.I)
+    return head.strip() or name
+
+
+def canonical_key(brand: str | None, name: str, category=None) -> str:
+    """One key per model, whichever store's title it comes from.
 
     'Samsung Galaxy S24 Ultra 5G 256GB Titanium Black', 'Galaxy S24 Ultra (12GB/512GB)' and
-    'Samsung Galaxy S24 Ultra (12/256) - 1 Year Official Warranty' -> 'samsung galaxy s24 ultra'
+    'Samsung Galaxy S24 Ultra (12/256) - 1 Year Official Warranty' -> 'samsung galaxy s24 ultra';
+    'Galaxy S24+' -> 'samsung galaxy s24 plus' (not the S24); 'Xiaomi Redmi Note 14' = 'Redmi Note 14'.
     """
-    n = clean_title(name).lower()
-    b = (brand or "").lower().strip()
-    if b in ("no brand", "generic", "oem"):
-        b = ""
-    n = _TITLE_JUNK.sub(" ", n)
-    n = re.sub(r"[()\[\],/|+]", " ", n)
+    cat = getattr(category, "value", category)
+    n = model_name(name, category).lower()
+    n = _TITLE_JUNK.sub(" ", n)                               # RAM/storage '8+256' goes before '+' = plus
+    n = re.sub(r"(?<=[a-z0-9])\s*\+(?=\s|$|[)\],/|])", " plus", n)
+    if cat in _PITCH_CATEGORIES:
+        n = _JOINED_NUMBER.sub(r"\1 \2", n)
+        n = re.sub(r"\b(\d+)\s*(gb|tb)\b", " ", n)
+    n = re.sub(r"[()\[\],/|+:\"”“]", " ", n)
     n = re.sub(r"(?<=\s)-(?=\s)|^-|-$", " ", n)
     n = _NOISE.sub(" ", n)
     n = re.sub(r"\s+", " ", n).strip()
-    if b and not n.startswith(b):
+
+    b = (brand or "").lower().strip()
+    if b in ("no brand", "generic", "oem", "unbranded", "others", "other"):
+        b = ""
+    b = b.split()[0] if b else ""
+    # 'Xiaomi Redmi Note 14' / brand Xiaomi + 'Redmi Note 14' / brand Redmi: all 'redmi note 14'.
+    for sub in _SUB_BRANDS:
+        if re.match(rf"(?:{re.escape(b)}\s+)?{sub}\b", n) if b else n.startswith(sub):
+            n = re.sub(rf"^(?:{re.escape(b)}\s+)?", "", n) if b and b != sub else n
+            b = sub
+            break
+    if not b:
+        b = next((maker for fam, maker in _FAMILY_BRAND if n.startswith(fam)), "")
+    if b and b in _SUB_BRANDS and not n.startswith(b):
         n = f"{b} {n}"
-    return n
+    elif b and not n.startswith(b):
+        n = f"{b} {n}"
+    return re.sub(r"\s+", " ", n).strip()
+
+
+# Words that make a different model, not a different listing of the same one.
+_MODEL_WORDS = {"pro", "max", "ultra", "plus", "lite", "fe", "mini", "neo", "prime", "edge", "se", "air",
+                "fold", "flip", "power", "play", "turbo", "speed", "go", "note", "s", "t", "r", "e", "x",
+                "i", "c", "a", "m", "v", "y", "g", "f", "fs", "4g", "5g", "kids", "classic", "sport", "active",
+                "smart", "unity", "touch", "slim", "flex", "vision", "gt"}
+
+
+def likely_same(key_a: str, key_b: str) -> bool:
+    """Two keys that are probably one model the key rules didn't merge: one is the other plus
+    words that don't name a different model ('galaxy a56' / 'galaxy a56 awesome edition')."""
+    a, b = key_a.split(), key_b.split()
+    if len(a) > len(b):
+        a, b = b, a
+    if len(a) < 2 or b[: len(a)] != a:
+        return False
+    extra = b[len(a):]
+    return not any(w in _MODEL_WORDS or re.search(r"\d", w) for w in extra)
 
 
 def infer_os(category: Category, text: str) -> str | None:

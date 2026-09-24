@@ -115,6 +115,37 @@ def test_canonical_key_merges_variants():
     assert canonical_key("Google", "Google Pixel 9 128GB Obsidian") == "google pixel 9"
 
 
+def test_phone_titles_with_a_sales_pitch_are_the_same_model():
+    """Store titles pile specs after the model; they must land on the same card."""
+    P = Category.PHONE
+    same = [("OnePlus 12", "OnePlus 12 5G 54000mAh 50MP Triple Main Camera Smartphone"),
+            ("OnePlus 13", "OnePlus 13 6.82-inch 50MP Sony LYT-808 50MP Qualcomm Snapdragon 8 Elite Smartphone"),
+            ("OnePlus 15", "OnePlus 15 Snapdragon®8 Elite Gen 5 7300mAh 50MP"),
+            ("OnePlus Nord 6", "OnePlus Nord 6 5G Smartphone Features and Specs"),
+            ("OnePlus Nord CE 5", "OnePlus Nord CE5 5G 7100mAh Battery"),
+            ("OnePlus Nord CE 4 Lite", "OnePlus Nord CE4 Lite 5G")]
+    for a, b in same:
+        assert canonical_key("OnePlus", a, P) == canonical_key("OnePlus", b, P), b
+    assert canonical_key("OnePlus", "OnePlus 12R 5G", P) != canonical_key("OnePlus", "OnePlus 12", P)
+    # Elsewhere the numbers are the model: power banks of different sizes stay apart.
+    pb = Category.POWER_BANK
+    assert canonical_key("UGREEN", "UGREEN 20000mAh Power Bank", pb) != canonical_key("UGREEN", "UGREEN 10000mAh Power Bank", pb)
+
+
+def test_merged_card_keeps_the_plain_name(tmp_path):
+    from devicescout.models import Offer, Product
+    store = Store(tmp_path / "t.db")
+    def phone(name, price):
+        return Product(source="hukut", url=f"https://s/{price}", name=name, brand="OnePlus", category=Category.PHONE,
+                       offers=[Offer(source="hukut", url=f"https://s/{price}", price=price, currency="NPR",
+                                     scraped_at="2026-09-24T00:00:00+00:00")])
+    k1 = store.upsert(phone("OnePlus 12 5G 54000mAh 50MP Triple Main Camera Smartphone", 139999))
+    k2 = store.upsert(phone("OnePlus 12", 139999))
+    assert k1 == k2
+    [p] = store.products(Category.PHONE)
+    assert p.name == "OnePlus 12"
+
+
 def test_chip_tier():
     assert chip_tier("Snapdragon 8 Gen 3") == 9
     assert chip_tier("Google Tensor G4") == 8
@@ -148,7 +179,7 @@ def test_rank_profiles(tmp_path):
     assert compact[0].product.name.startswith("Google Pixel 9")
 
     budget = rank(phones, "balanced", Category.PHONE, max_price=800 * 140)  # NPR
-    assert [r.product.name for r in budget] == ["Google Pixel 9 128GB Obsidian"]
+    assert [r.product.name for r in budget] == ["Google Pixel 9"]
 
     assert rank(phones, "gaming", Category.PHONE, os="ios") == []
     assert all(0 <= r.coverage <= 1 and 0 <= r.score <= 100 for r in photo)
@@ -167,3 +198,60 @@ def test_empty_or_bad_rates_env_does_not_crash():
         finally:
             del os.environ["DEVICESCOUT_RATES"]
     importlib.reload(cur)
+
+
+@pytest.mark.parametrize("titles", [
+    [("Samsung", "Samsung Galaxy A56 5G"), ("Samsung", "Samsung Galaxy A56 5G (8GB/256GB) - 1 Year Warranty"),
+     ("Samsung", 'Galaxy A56 6.7" Super AMOLED, 50MP Camera'), (None, "Galaxy A56")],
+    [("Xiaomi", "Xiaomi Redmi Note 14 Pro 5G"), ("Redmi", "Redmi Note 14 Pro (8/256)"),
+     ("Xiaomi", "Redmi Note14 Pro MediaTek Dimensity 7300 Ultra")],
+    [("Apple", "Apple iPhone 16 Pro Max 256GB Desert Titanium"), ("Apple", "iPhone16 Pro Max"), (None, "iPhone 16 Pro Max")],
+    [("Infinix", "Infinix HOT 60 Pro Plus, 50MP Camera, Android 15 Smartphone"), ("Infinix", "Infinix Hot 60 Pro+"),
+     ("Infinix", "Infinix HOT60 Pro+ 8+256GB")],
+    [("Samsung", "Samsung Galaxy S25 Ultra AI Smartphone"), ("Samsung", "Samsung Galaxy S25 Ultra")],
+    [("vivo", "Vivo Y29 4G"), ("vivo", "vivo Y29 (6GB+128GB) Mobile Phone")],
+    [("Realme", "Realme 14 Pro+ 5G"), ("Realme", "realme 14 Pro Plus 5G 12/512")],
+])
+def test_one_key_per_model_across_brands_and_title_styles(titles):
+    assert len({canonical_key(b, n, Category.PHONE) for b, n in titles}) == 1
+
+
+def test_different_models_keep_different_keys():
+    names = ["Samsung Galaxy S24", "Samsung Galaxy S24+", "Samsung Galaxy S24 Ultra", "Samsung Galaxy S24 FE",
+             "Motorola Moto G (2024)", "Motorola Moto G (2025)", "Apple iPhone 16", "Apple iPhone 16 Plus",
+             "Apple iPhone 16e", "OnePlus 12", "OnePlus 12R", "Koshi K5 Camera"]
+    keys = [canonical_key(n.split()[0], n, Category.PHONE) for n in names]
+    assert len(set(keys)) == len(keys)
+
+
+def test_likely_same_flags_leftovers_but_not_other_models():
+    from devicescout.normalize import likely_same
+    assert likely_same("samsung galaxy a56", "samsung galaxy a56 awesome edition")
+    assert not likely_same("samsung galaxy s24", "samsung galaxy s24 ultra")
+    assert not likely_same("apple iphone 16", "apple iphone 16 pro max")
+
+
+def test_processor_is_the_chip_not_the_core_layout():
+    from devicescout.normalize import normalize_specs
+    raw = {"Platform / CPU": "Octa-core (1x2.8 GHz Cortex-720 & 4x2.4 GHz Cortex-720)",
+           "Platform / Chipset": "Qualcomm SM7635 Snapdragon 7s Gen 3 (4 nm)"}
+    assert normalize_specs(raw, Category.PHONE)["chipset"].startswith("Qualcomm SM7635")
+    assert normalize_specs({"CPU": "Octa-core 2.2 GHz"}, Category.PHONE)["chipset"] == "Octa-core 2.2 GHz"
+
+
+@pytest.mark.parametrize("cat,a,b", [
+    (Category.PHONE, "Honor 600 Lite 5G: Stunning", "Honor 600 Lite"),
+    (Category.PHONE, "Apple iPhone 17 5G XDR", "Apple iPhone 17"),
+    (Category.PHONE, "Xiaomi 17T 5G Leica Telephoto", "Xiaomi 17T"),
+    (Category.EARBUDS, "Xiaomi Redmi Buds 8 True Wireless Earbuds Features", "Redmi Buds 8"),
+    (Category.CAMERA, "Logitech C270 HD Webcam for Clear Video Calls", "Logitech C270 HD WebCam"),
+])
+def test_page_title_leftovers_are_the_same_model(cat, a, b):
+    assert canonical_key(a.split()[0], a, cat) == canonical_key(b.split()[0], b, cat)
+
+
+def test_taglines_do_not_merge_different_models():
+    P = Category.PHONE
+    assert canonical_key("Samsung", "Samsung Galaxy S26 FE: 5G", P) != canonical_key("Samsung", "Samsung Galaxy S26", P)
+    assert canonical_key("Honor", "Honor X9c Smart 5G", P) != canonical_key("Honor", "Honor X9c 5G", P)
+    assert "iphone 16" in canonical_key("Spigen", "Spigen Case for iPhone 16", Category.CASE)

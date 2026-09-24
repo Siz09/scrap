@@ -78,11 +78,42 @@ cd web && npm run build                     # typecheck + build into devicescout
 - `ops.jobs` and `ops.kv`.
 - Extensions: pg_trgm, unaccent, btree_gin, pg_stat_statements. `SCHEMA_VERSION` "5".
 
+**Matching one model across sites** (`normalize.model_name`, `canonical_key(brand, name, category)`)
+- **`model_name`** cleans a store title into the card name, for every device: listing tails and ® ™ go.
+  For phones, tablets and watches it also cuts everything after the model, at the first bracket, comma,
+  " - ", or spec/pitch word (mAh, MP, inch/", Snapdragon, Dimensity, AMOLED, Triple/Main Camera,
+  Android 15, "Features and Specs", "with …"). It also drops a trailing "Smartphone"/"Mobile".
+  "(2024)" years are kept. Earbuds get the same cut. For every device, `clean_title` drops a colon tagline
+  ("Honor 600 Lite 5G: Stunning") and page words ("Features", "Overview", "Details"), and `model_name`
+  drops "for …" use-case tails except for cases, cables, chargers, accessories and power banks.
+- **`canonical_key`** is the merge key.
+  - Removes RAM/storage, colours, 4G/5G and warranty text.
+  - "+" becomes "plus", so S24+ stays apart from the S24.
+  - Glued series numbers are split ("CE5", "iPhone16", "HOT60" become "CE 5", "iPhone 16", "HOT 60").
+  - Sub-brands own the key ("Xiaomi Redmi Note 14" = "Redmi Note 14").
+  - Family names imply the brand when it's missing (Galaxy → samsung, iPhone → apple).
+- Other categories keep their numbers (power banks), and laptop configs aren't merged.
+- **`devicescout duplicates`** lists cards that probably still are one device (`likely_same`), for tuning.
+- After changing matching/cleaning rules: `devicescout reprocess` (re-cleans the stored records).
+- After changing a **page parser**: `devicescout reparse [site ...] [--dry-run] [--force]` (`reparse.py`, PostgreSQL only).
+  It re-reads every saved page in `raw.pages` with today's parser (listing pages first, for category hints),
+  replaces that site's `raw.records` (prices keep the page's fetch time), then runs `reprocess`.
+  A site whose new reading has under 50% of its old records keeps them unless `--force`. Sites without
+  saved pages are left alone. Pages only hold what was fetched: Hukut pages fetched before the browser
+  change have no spec sheet, so Hukut still needs one re-scrape for specs.
+
 **Jobs** (`jobs.py`, `cli.py cmd_schedule`)
-- Two lanes: the scheduled full scrape runs in its own thread and connection. Check/Update jobs started
-  from the web page are picked up within about 2 s alongside it (`claim_job(exclude_origin="schedule")`).
-- A heartbeat runs every 30 s. On start the scraper clears flags left "running" by a job that was interrupted.
-- Scrape order: stores first, spec/review sites last (`scrape_order`).
+- **One job at a time, one website at a time** (owner's request). The scheduled run and the Check/Update
+  jobs started from the website share one queue, taken oldest first. A job started from the page waits
+  its turn; the page shows "Now: …" and "#n in line: …".
+- Sources are scraped **top to bottom in `sources.json` order** (`scrape_order` keeps the list order).
+- On start, the scraper marks jobs left "running" as failed, clears stale flags, and cancels scheduled
+  jobs still waiting from the previous container.
+- **Full runs resume after a restart** (`run_scrape(resume=True)`, kv `scrape_cycle`): sites finished in the
+  run are skipped, and the site it was on skips product pages already fetched in the run (`pages_since`,
+  `GenericSource.skip_urls`). A completed run clears the cycle; one older than 48 h starts over.
+- While a job runs, a watcher thread (every `WATCH_SECONDS`=20) writes the heartbeat and checks Stop, so a
+  quiet browser walk (Hukut) no longer shows "scraper isn't running" and Stop works mid-site.
 - `run_scrape` also refreshes exchange rates.
 
 **Prices**
@@ -101,6 +132,9 @@ og:image from the product's page, then to an SVG placeholder.
 **Frontend** (`web/src/`)
 - Pages: Advisor, Browse, Compare, Deals, Sources (data sources, Check/Update, job progress),
   ProductDetail. Components PriceTag and DeviceImage.
+- Sources page "Scraping" column, from `source_status.json` fields set in `run_scrape`: `scrape_started_at`,
+  `scrape_so_far` (every 25 items), `last_scrape_seconds`, `last_scrape_outcome` (done/stopped/rate limited/error).
+  It shows Scraping now / Next up / Waiting · N sites ahead / In line · #n / Done N ago (took …) / never scraped.
 - `stored.ts` `useStored`: filters and typed text on Advisor/Browse/Deals are kept in localStorage.
   Advisor has a "Start over" button.
 
@@ -120,21 +154,18 @@ og:image from the product's page, then to an SVG placeholder.
 
 ## Open / unverified (latest first)
 
-1. **Hukut specs (commit 02e8b5a, NOT yet verified on the real site).**
-   - Found with `inspect https://hukut.com/oneplus-15r`:
-     - The plain HTML has 0 specs, only 809 characters of visible text.
-     - The browser-rendered page has about 30 elements with "spec" in their class, but the parser read none.
-     - It stored variant price rows ("12/256GB → Rs. 98,499") as "specs".
-   - Fix:
-     - A product page that is script-heavy and has fewer than 5 specs is re-rendered in the browser;
-       after 2 wins the site's product pages go straight to the browser (this makes Hukut scrapes slower).
-     - `_div_spec_rows` reads label/value pairs inside `[class*=spec]` blocks. **Its guess at Hukut's
-       markup is unconfirmed.**
-     - Values that are only a price are dropped from the specs.
-   - Next step: the owner runs `inspect` again.
-     - If "specs found" in the dynamic section is still 0–3, fix the extractor using the printed
-       "spec block markup (start)".
-     - If specs are embedded in `self.__next_f` script data, parsing that would avoid the browser (faster).
+1. **Hukut specs: verified working with `inspect` on the owner's machine; stored data not re-scraped yet.**
+   - Hukut's plain HTML has no specs. The browser-rendered page has a `<div id="specification">`
+     sheet: one `<h3>SECTION</h3>` per section, then rows of
+     `<div class="grid"><div>Label</div><div class="col-span-2">Value</div></div>`.
+   - `inspect https://hukut.com/oneplus-15r` found 39 specs in the dynamic run (16 understood).
+   - `_div_spec_rows` prefixes labels with their section, as GSMArena's are ("Battery / Type"), and skips
+     wrappers holding two rows. That fix (after the owner's run) is tested only on copied markup.
+   - Script-heavy product pages with fewer than 5 specs are re-rendered in the browser, and after 2 wins the
+     site goes straight to the browser, so Hukut scrapes are slower.
+   - Existing Hukut products only get specs after Hukut is updated again (Update on the Data sources page).
+   - Possible speed-up: the spec text may also be in the `self.__next_f` script data of the plain page;
+     unconfirmed, since only the description was seen there.
    - Check stored coverage:
      ```sql
      WITH r AS (SELECT (SELECT count(*) FROM jsonb_object_keys(payload->'raw_specs')) AS n
@@ -142,8 +173,10 @@ og:image from the product's page, then to an SVG placeholder.
      SELECT count(*), count(*) FILTER (WHERE n>0), round(avg(n),1) FROM r;
      ```
 2. **Real product images from stores** haven't been confirmed to load in the owner's UI.
-3. **Old junk itti records** (category pages saved as products before the crawl fix) are still in the
-   owner's DB. The owner was offered a "re-parse stored raw pages" command but hasn't asked for it.
+3. **`reparse` on the owner's DB:** the first run replaced brother-mart (946 → 946), then crashed on gadgetbyte's
+   saved sitemap (XML declaration), so the catalogue wasn't rebuilt. Fixed: pages are parsed as bytes,
+   sitemaps/feeds skipped, and one site's error no longer stops the run. Needs a re-run to confirm;
+   the old junk itti records should disappear after it.
 4. **A GSMArena flip phone may show its cover-screen size** (4.1") as the main display. This is flagged
    as a spec conflict. It's unconfirmed which phone; ask the owner.
 5. Ideas offered but not requested: incremental price-only updates, parallel scraping per site.

@@ -233,20 +233,44 @@ def _script_heavy(page) -> bool:
 def _div_spec_rows(page) -> list[tuple[str, str]]:
     """Spec sheets built from <div>s/<span>s instead of a table, inside a block whose class or id
     says 'spec' (hukut and most Next.js stores): each row is an element with exactly two parts,
-    a short label and its value, e.g. <div><span>Battery</span><span>5000 mAh</span></div>."""
+    a short label and its value, e.g. <div><span>Battery</span><span>5000 mAh</span></div>.
+    Section headings (<h3>BATTERY</h3>) prefix the label as GSMArena's do ("Battery / Type"), so
+    labels that repeat in each section (Type, Features) stay apart and keep their meaning."""
+    headings = {"h2", "h3", "h4", "h5", "h6"}
+
+    def parts(el):
+        return [c for c in el.children if c.tag not in ("script", "style", "svg", "button")]
+
+    def pair(el):
+        kids = parts(el)
+        if len(kids) != 2 or kids[0].tag in headings or any(len(k.css("*")) > 4 for k in kids):
+            return None
+        if any(len(parts(k)) == 2 and all(text_of(x) for x in parts(k)) for k in kids):
+            return None                        # two rows side by side, not a label and its value
+        return text_of(kids[0]).rstrip(":").strip(), text_of(kids[1])
+
     out: list[tuple[str, str]] = []
     seen: set[str] = set()
     for box in page.css("[class*=spec], [id*=spec], [class*=Spec], [id*=Spec]"):
-        for row in [box, *box.css("*")]:
-            kids = [c for c in row.children if c.tag not in ("script", "style", "svg", "button")]
-            if len(kids) != 2 or any(len(k.css("*")) > 4 for k in kids):
-                continue                       # not a label/value pair, or a whole group
-            label, value = text_of(kids[0]).rstrip(":").strip(), text_of(kids[1])
-            if (not label or not value or label == value or len(label) > 40 or len(value) > 300
-                    or not re.search(r"[A-Za-z]", label) or label.lower() in seen):
+        section = ""
+        for el in [box, *box.css("*")]:
+            if el.tag in headings:
+                heading = text_of(el)
+                if heading and "specification" not in heading.lower() and len(heading) <= 40:
+                    section = heading.title() if heading.isupper() else heading
                 continue
-            seen.add(label.lower())
-            out.append((label, value))
+            got = pair(el)
+            if not got:
+                continue
+            label, value = got
+            if (not label or not value or label == value or len(label) > 40 or len(value) > 300
+                    or not re.search(r"[A-Za-z]", label)):
+                continue
+            key = f"{section} / {label}" if section else label
+            if key.lower() in seen:
+                continue
+            seen.add(key.lower())
+            out.append((key, value))
     return out
 
 
@@ -315,6 +339,7 @@ class GenericSource(Source):
         self._browser_wins = 0
         self.deadline: float | None = None    # time.monotonic() after which a crawl stops (checks)
         self._hints: dict[str, str] = {}   # product url -> words of the listing it was found on
+        self.skip_urls: set[str] = set()   # product pages already read in this run (resuming after a restart)
 
     def _wanted(self, url: str) -> bool:
         if self.cfg.url_exclude and re.search(self.cfg.url_exclude, url, re.I):
@@ -357,12 +382,15 @@ class GenericSource(Source):
         if self.cfg.product_link_css:
             yield from super().crawl(fetcher, limit, **opts)
             return
-        done: set[str] = set()
+        done: set[str] = {self._canonical(u, True) for u in self.skip_urls}
         seeds: list[str] = []      # sitemap entries that are category / brand pages, not products
-        n = 0
+        n = skipped = 0
         for url in sitemap_urls(fetcher, self._base()):
             if n >= limit or (self.deadline and time.monotonic() > self.deadline):
                 return
+            if self._canonical(url, True) in done and self._looks_like_product(url):
+                skipped += 1       # read earlier in this run, before a restart
+                continue
             if url in done or not self._wanted(url):
                 continue
             if not self._looks_like_product(url):
@@ -375,7 +403,7 @@ class GenericSource(Source):
                 yield product
             else:
                 seeds.append(url)  # a category page after all: walk it for its products
-        if n and not self.cfg.crawl_site:
+        if (n or skipped) and not self.cfg.crawl_site:
             return
         # No usable product sitemap: walk the site, starting from the category pages it listed.
         for product in self._site_crawl(fetcher, limit - n, skip=done, seeds=seeds):

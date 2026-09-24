@@ -194,6 +194,10 @@ export interface SourceRow {
   checked_at?: string;
   last_scrape_count?: number;
   last_scraped_at?: string;
+  scrape_started_at?: string;
+  scrape_so_far?: number;
+  last_scrape_seconds?: number;
+  last_scrape_outcome?: "done" | "stopped" | "rate limited" | "error";
   last_rejected?: number;
   raw_pages?: number;
   raw_records?: number;

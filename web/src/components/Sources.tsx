@@ -14,6 +14,29 @@ const STATUS: Record<string, { label: string; tone: string }> = {
   RUNNING: { label: "Checking…", tone: "" },
 };
 
+const OUTCOME_LABELS: Record<string, string> = {
+  done: "Done", stopped: "Stopped", "rate limited": "Stopped (site limited us)", error: "Stopped (error)",
+};
+
+function took(seconds?: number): string {
+  if (seconds == null) return "";
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.round(seconds / 60);
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
+}
+
+function lastScrape(r: SourceRow, withWhen = true) {
+  if (!r.last_scraped_at) return null;
+  return (
+    <div className="muted small">
+      {withWhen ? `last: ${relTime(r.last_scraped_at)} · ` : ""}
+      {(r.last_scrape_count ?? 0).toLocaleString()} items
+      {r.last_rejected ? ` (${r.last_rejected} rejected)` : ""}
+      {r.last_scrape_seconds != null ? ` · took ${took(r.last_scrape_seconds)}` : ""}
+    </div>
+  );
+}
+
 export default function Sources() {
   const { meta, refreshMeta } = useApp();
   const [rows, setRows] = useState<SourceRow[]>([]);
@@ -54,9 +77,28 @@ export default function Sources() {
   // started here. The panel shows the one picked (default: the newest running or queued).
   const isActive = (j: Job) => j.status === "running" || j.status === "queued";
   const activeJobs = jobs.filter(isActive);
-  const job = jobs.find((j) => j.id === viewId) ?? activeJobs[0] ?? jobs[0] ?? null;
+  // One job runs at a time; the rest wait in line, oldest first.
+  const running = activeJobs.filter((j) => j.status === "running");
+  const queue = activeJobs.filter((j) => j.status === "queued")
+    .sort((a, b) => (a.created_at < b.created_at ? -1 : 1));
+  const job = jobs.find((j) => j.id === viewId) ?? running[0] ?? queue[0] ?? jobs[0] ?? null;
+  const others = job ? [...running, ...queue].filter((j) => j.id !== job.id) : [];
   const active = activeJobs.length > 0 || rows.some((r) => r.check === "RUNNING" || r.scrape_running);
   const allSourcesBusy = (kind: string) => activeJobs.some((j) => j.kind === kind && j.names.length === 0);
+  // Where a source stands in the scraping line: the running full update reaches sources in list
+  // order, and queued jobs wait their turn.
+  const runningAll = running.find((j) => j.kind === "scrape" && j.names.length === 0);
+  const enabledNames = rows.filter((r) => r.enabled).map((r) => r.name);
+  const waiting = (r: SourceRow): string | null => {
+    if (!r.enabled) return null;
+    if (runningAll?.progress.current) {
+      const at = enabledNames.indexOf(runningAll.progress.current);
+      const me = enabledNames.indexOf(r.name);
+      if (at >= 0 && me > at) return me - at === 1 ? "Next up" : `Waiting · ${me - at} sites ahead`;
+    }
+    const q = queue.findIndex((j) => j.kind === "scrape" && (j.names.length === 0 || j.names.includes(r.name)));
+    return q >= 0 ? `In line · #${q + 1}` : null;
+  };
   const sourceBusy = (r: SourceRow) =>
     r.check === "RUNNING" || !!r.scrape_running || activeJobs.some((j) => j.names.includes(r.name));
 
@@ -211,21 +253,21 @@ export default function Sources() {
               {job.kind === "check" ? "Checking" : "Updating"} {job.names.length ? job.names.join(", ") : "all sources"}
               {job.origin === "schedule" && <span className="muted small"> (scheduled)</span>}{" "}
               <span className={`badge ${job.status === "done" ? "good" : job.status === "failed" ? "low" : ""}`}>
-                {job.status === "queued" ? "waiting for the scraper" : job.status}
+                {job.status === "queued" ? `waiting, #${queue.indexOf(job) + 1} in line` : job.status}
               </span>
             </h2>
             {busy && canRun && <button type="button" className="btn ghost small" onClick={() => api.cancelJob(job.id).then(load)}>Stop</button>}
           </div>
-          {activeJobs.filter((j) => j.id !== job.id).length > 0 && (
+          {others.length > 0 && (
             <p className="muted small">
-              Also running:{" "}
-              {activeJobs.filter((j) => j.id !== job.id).map((j) => (
+              {others.map((j) => (
                 <button key={j.id} type="button" className="link small" onClick={() => setViewId(j.id)}>
+                  {j.status === "running" ? "Now: " : `#${queue.indexOf(j) + 1} in line: `}
                   {j.kind === "check" ? "Check" : "Update"} {j.names.length ? j.names.join(", ") : "all sources"}
                   {j.origin === "schedule" ? " (scheduled)" : ""}
                   {j.progress.total ? ` · ${j.progress.done ?? 0}/${j.progress.total}` : ""}
                 </button>
-              ))}
+              )).reduce<React.ReactNode[]>((acc, el, i) => (i ? [...acc, " · ", el] : [el]), [])}
             </p>
           )}
           {busy && p.total ? (
@@ -286,7 +328,7 @@ export default function Sources() {
       <div className="table-wrap">
         <table className="sources-table">
           <thead>
-            <tr><th>Source</th><th>Provides</th><th>Platform</th><th>Last check</th><th>Last update</th>{canRun && <th><span className="sr-only">Actions</span></th>}</tr>
+            <tr><th>Source</th><th>Provides</th><th>Platform</th><th>Last check</th><th>Scraping</th>{canRun && <th><span className="sr-only">Actions</span></th>}</tr>
           </thead>
           <tbody>
             {rows.map((r) => {
@@ -310,9 +352,22 @@ export default function Sources() {
                     {r.checked_at && r.check !== "RUNNING" && <div className="muted small">{relTime(r.checked_at)}</div>}
                   </td>
                   <td>
-                    {r.scrape_running ? <span className="badge"><span className="spinner inline" />Updating…</span>
-                      : r.last_scraped_at ? <>{r.last_scrape_count} items{r.last_rejected ? <span className="muted small"> ({r.last_rejected} rejected)</span> : null}<div className="muted small">{relTime(r.last_scraped_at)}</div></>
-                      : <span className="muted">—</span>}
+                    {(() => {
+                      const w = waiting(r);
+                      if (r.scrape_running) return <>
+                        <span className="badge"><span className="spinner inline" />Scraping now</span>
+                        <div className="muted small">
+                          {(r.scrape_so_far ?? 0).toLocaleString()} items so far
+                          {r.scrape_started_at ? ` · started ${relTime(r.scrape_started_at)}` : ""}
+                        </div></>;
+                      if (w) return <><span className="badge">{w}</span>{lastScrape(r)}</>;
+                      if (r.last_scraped_at) return <>
+                        <span className={`badge ${r.last_scrape_outcome && r.last_scrape_outcome !== "done" ? "low" : "good"}`}>
+                          {OUTCOME_LABELS[r.last_scrape_outcome ?? "done"]} {relTime(r.last_scraped_at)}
+                        </span>
+                        {lastScrape(r, false)}</>;
+                      return <span className="muted">{r.enabled ? "never scraped" : "disabled"}</span>;
+                    })()}
                     {r.raw_pages || r.raw_records ? (
                       <div className="muted small" title="Kept in the raw layer exactly as fetched, so it can be re-cleaned later without scraping again">
                         stored: {(r.raw_pages ?? 0).toLocaleString()} pages · {(r.raw_records ?? 0).toLocaleString()} records
