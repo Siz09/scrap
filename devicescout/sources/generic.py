@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -271,6 +272,7 @@ class GenericSource(Source):
         self.listing_mode = cfg.fetch_mode    # category / listing pages (often JS-built even when
                                               # product pages carry their data in plain HTML: hukut)
         self._browser_wins = 0
+        self.deadline: float | None = None    # time.monotonic() after which a crawl stops (checks)
         self._hints: dict[str, str] = {}   # product url -> words of the listing it was found on
 
     def _wanted(self, url: str) -> bool:
@@ -318,7 +320,7 @@ class GenericSource(Source):
         seeds: list[str] = []      # sitemap entries that are category / brand pages, not products
         n = 0
         for url in sitemap_urls(fetcher, self._base()):
-            if n >= limit:
+            if n >= limit or (self.deadline and time.monotonic() > self.deadline):
                 return
             if url in done or not self._wanted(url):
                 continue
@@ -390,6 +392,9 @@ class GenericSource(Source):
         queued = set(listings) | set(skip)
         walked = n = 0
         while (products or listings) and n < limit:
+            if self.deadline and time.monotonic() > self.deadline:
+                log.info("[%s] time limit reached after %d listing pages", self.name, walked)
+                break
             if products:
                 url, is_product = products.popleft(), True
             else:

@@ -35,9 +35,11 @@ def _save_status(name: str, **fields) -> None:
 
 
 CHECK_BROWSE_PAGES = 25   # a check samples a source: it shouldn't walk a whole site looking for products
+CHECK_SECONDS = 180       # ... nor spend more than 3 minutes on one source
 
 
-def crawl_entry(entry: dict, fetcher, limit: int | None, browse_pages: int | None = None):
+def crawl_entry(entry: dict, fetcher, limit: int | None, browse_pages: int | None = None,
+                seconds: float | None = None):
     limit = limit or 10**9            # 0/None: everything the site has
     if entry.get("delay") and hasattr(fetcher, "host_delay"):
         from urllib.parse import urlparse
@@ -47,6 +49,8 @@ def crawl_entry(entry: dict, fetcher, limit: int | None, browse_pages: int | Non
     source = build(entry, fetcher)
     if browse_pages and hasattr(source, "cfg") and hasattr(source.cfg, "browse_pages"):
         source.cfg.browse_pages = min(source.cfg.browse_pages, browse_pages)
+    if seconds:
+        source.deadline = time.monotonic() + seconds
     if entry.get("type") == "gsmarena":
         brands = entry.get("brands", ["samsung"])
         per_brand = max(1, limit // max(1, len(brands)))
@@ -108,7 +112,8 @@ def run_check(entries: list[dict], log: Log = print, sample: int = 3, delay: flo
                     remember(e["name"], report)
                     detail = f"{report['platform']}: {report['evidence']}"
                 got = []
-                for p in crawl_entry(e, fetcher, limit=sample, browse_pages=CHECK_BROWSE_PAGES):
+                for p in crawl_entry(e, fetcher, limit=sample, browse_pages=CHECK_BROWSE_PAGES,
+                                         seconds=CHECK_SECONDS):
                     got.append(p)
                     if store is not None:
                         ingest(store, p)     # what a check finds is kept, like a small scrape

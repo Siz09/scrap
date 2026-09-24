@@ -40,7 +40,9 @@ services:
     build:
       context: .
       target: scraper
-    command: ["devicescout", "schedule", "--every", "${SCRAPE_EVERY:-6h}", "--check-first"]
+    # Straight to scraping on start (a scrape shows which sources work too); Check on the
+    # Data sources page tests a source on demand.
+    command: ["devicescout", "schedule", "--every", "${SCRAPE_EVERY:-6h}"]
     environment:
       <<: *env
       FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}   # optional, paid: enables the last-resort scraper

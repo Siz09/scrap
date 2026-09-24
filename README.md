@@ -27,7 +27,7 @@ Then open http://localhost:8765. Everything listens on `127.0.0.1` only, so noth
   - Disable or remove sources.
 
   Each source also shows how many pages and records have been stored from it.
-- **scraper**: checks every source once, then scrapes every enabled source completely every 6 hours (`SCRAPE_EVERY=12h` in `.env` to change it). It also runs jobs you start from the website within about 5 seconds. Every scraper in the fallback chain is installed:
+- **scraper**: scrapes every enabled source completely on start and then every 6 hours (quick stores first) (`SCRAPE_EVERY=12h` in `.env` to change it). It also runs jobs you start from the website within about 5 seconds. Every scraper in the fallback chain is installed:
   - fast HTTP and plain HTTP,
   - Chromium (`scrapling-dynamic`),
   - stealth Chromium (`scrapling-stealth`, patchright),
