@@ -1,13 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, type Advice, type Must, type MustInfo, type Parsed } from "../api";
 import { useApp } from "../context";
+import { useStored } from "../stored";
 import { npr, nprShort, osName, parseAmount } from "../format";
 import PickCard from "./PickCard";
 
 type MustState = Record<string, number | boolean>;
 
+const TOP = 5;   // best picks shown first; every other match is listed below them
+
 const EXCLUDED_LABELS: Record<string, string> = {
-  no_nepal_price: "no price in Nepal yet",
+  no_nepal_price: "not sold in Nepal",
+  no_price: "with no price yet (can't check the budget)",
   over_budget: "over budget",
   under_min_budget: "under your minimum",
   os: "other OS",
@@ -18,20 +22,22 @@ const EXCLUDED_LABELS: Record<string, string> = {
 export default function Advisor() {
   const { meta } = useApp();
   const categories = meta.categories.filter((c) => c.uses.length > 0);
-  const [category, setCategory] = useState("phone");
+  const [category, setCategory] = useStored("advisor.category", "phone");
   const cat = categories.find((c) => c.id === category) ?? categories[0];
 
-  const [minText, setMinText] = useState("");
-  const [maxText, setMaxText] = useState("60k");
-  const [uses, setUses] = useState<string[]>([]);
-  const [os, setOs] = useState<string[]>([]);
-  const [musts, setMusts] = useState<MustState>({});
-  const [officialOnly, setOfficialOnly] = useState(false);
-  const [brands, setBrands] = useState<string[]>([]);
-  const [excludeBrands, setExcludeBrands] = useState<string[]>([]);
-  const [query, setQuery] = useState("");
-  const [understood, setUnderstood] = useState<string[] | null>(null);
-  const [inStock, setInStock] = useState(false);
+  const [minText, setMinText] = useStored("advisor.minText", "");
+  const [maxText, setMaxText] = useStored("advisor.maxText", "60k");
+  const [uses, setUses] = useStored<string[]>("advisor.uses", []);
+  const [os, setOs] = useStored<string[]>("advisor.os", []);
+  const [musts, setMusts] = useStored<MustState>("advisor.musts", {});
+  const [officialOnly, setOfficialOnly] = useStored("advisor.officialOnly", false);
+  const [brands, setBrands] = useStored<string[]>("advisor.brands", []);
+  const [excludeBrands, setExcludeBrands] = useStored<string[]>("advisor.excludeBrands", []);
+  const [query, setQuery] = useStored("advisor.query", "");
+  const [understood, setUnderstood] = useStored<string[] | null>("advisor.understood", null);
+  const [inStock, setInStock] = useStored("advisor.inStock", false);
+  const [nepalOnly, setNepalOnly] = useStored("advisor.nepalOnly", false);
+  const [moreShown, setMoreShown] = useState(20);   // matches beyond the top 5, shown 20 at a time
 
   const [advice, setAdvice] = useState<Advice | null>(null);
   const [loading, setLoading] = useState(false);
@@ -74,6 +80,18 @@ export default function Advisor() {
     setUnderstood(p.understood);
   }
 
+  // Choices are remembered between visits; this puts the form back to how it starts.
+  function startOver() {
+    setQuery("");
+    setUnderstood(null);
+    setBrands([]);
+    setExcludeBrands([]);
+    setOfficialOnly(false);
+    setInStock(false);
+    setNepalOnly(false);
+    pickCategory("phone");
+  }
+
   function toggleUse(id: string) {
     setUses((u) => (u.includes(id) ? u.filter((x) => x !== id) : [...u, id]));
   }
@@ -90,9 +108,9 @@ export default function Advisor() {
       category: cat.id, budget_min: budgetMin, budget_max: budgetMax,
       uses: uses.length ? weighted : { balanced: 1 }, os, must,
       brands, exclude_brands: excludeBrands,
-      official_only: officialOnly, in_stock_only: inStock, top: 5,
+      official_only: officialOnly, in_stock_only: inStock, nepal_only: nepalOnly, top: 500,
     };
-  }, [cat, budgetMin, budgetMax, uses, os, musts, brands, excludeBrands, officialOnly, inStock]);
+  }, [cat, budgetMin, budgetMax, uses, os, musts, brands, excludeBrands, officialOnly, inStock, nepalOnly]);
 
   useEffect(() => {
     if (budgetInvalid) return;
@@ -100,7 +118,7 @@ export default function Advisor() {
     setLoading(true);
     const t = setTimeout(() => {
       api.advise(request)
-        .then((a) => !cancelled && (setAdvice(a), setError(null)))
+        .then((a) => !cancelled && (setAdvice(a), setError(null), setMoreShown(20)))
         .catch((e) => !cancelled && setError(e.message))
         .finally(() => !cancelled && setLoading(false));
     }, 250);
@@ -125,6 +143,7 @@ export default function Advisor() {
           <input id="ask-input" type="search" value={query} onChange={(e) => setQuery(e.target.value)}
                  placeholder='e.g. "photography phone under 1.2 lakh"' />
           <button type="submit" className="btn primary">Ask</button>
+          <button type="button" className="btn" onClick={startOver}>Start over</button>
         </form>
         {understood ? (
           <div className="understood" aria-live="polite">
@@ -243,6 +262,10 @@ export default function Advisor() {
             <input type="checkbox" checked={inStock} onChange={(e) => setInStock(e.target.checked)} />
             Only in stock
           </label>
+          <label className="check">
+            <input type="checkbox" checked={nepalOnly} onChange={(e) => setNepalOnly(e.target.checked)} />
+            Only sold in Nepal <span className="muted">(hide devices priced only abroad)</span>
+          </label>
         </fieldset>
       </section>
 
@@ -268,28 +291,57 @@ export default function Advisor() {
 
             {advice.picks.length === 0 && (
               <div className="empty">
-                <p>Nothing fits every requirement. Try raising the budget, removing a must-have, or allowing any OS.</p>
+                {(advice.excluded.no_price ?? 0) > 0 && advice.considered === 0 ? (
+                  <p>
+                    {advice.excluded.no_price} {cat.label.toLowerCase()} have specs but no price anywhere yet, so they can't
+                    be checked against a budget. Clear the budget to see them, or wait for the scraper to reach more
+                    stores (<a href="#/sources">Data sources</a>).
+                  </p>
+                ) : (
+                  <p>Nothing fits every requirement. Try raising the budget, removing a must-have, or allowing any OS.</p>
+                )}
               </div>
             )}
 
-            <ol className="picks">
-              {advice.picks.map((p, i) => (
-                <li key={p.key}><PickCard pick={p} rank={i + 1} /></li>
-              ))}
-            </ol>
+            {advice.picks.length > 0 && (
+              <ol className="picks">
+                {advice.picks.slice(0, TOP).map((p, i) => (
+                  <li key={p.key}><PickCard pick={p} rank={i + 1} /></li>
+                ))}
+              </ol>
+            )}
+
+            {advice.picks.length > TOP && (
+              <section className="more-picks">
+                <h3>More {cat.label.toLowerCase()} that fit ({advice.picks.length - TOP})</h3>
+                <p className="muted">Also match everything you asked for, ranked by how well they fit.</p>
+                <ol className="picks" start={TOP + 1}>
+                  {advice.picks.slice(TOP, TOP + moreShown).map((p, i) => (
+                    <li key={p.key}><PickCard pick={p} rank={TOP + i + 1} /></li>
+                  ))}
+                </ol>
+                {advice.picks.length > TOP + moreShown && (
+                  <button type="button" className="btn" onClick={() => setMoreShown((n) => n + 20)}>
+                    Show {Math.min(20, advice.picks.length - TOP - moreShown)} more
+                  </button>
+                )}
+              </section>
+            )}
 
             {advice.value_pick && (
               <div className="special">
                 <h3>Save money</h3>
                 <p className="muted">Nearly as good as #1 for less.</p>
-                <PickCard pick={advice.value_pick} tone="value" savings={(advice.picks[0]?.price_npr ?? 0) - advice.value_pick.price_npr} />
+                <PickCard pick={advice.value_pick} tone="value"
+                          savings={advice.picks[0]?.price_npr != null && advice.value_pick.price_npr != null && !advice.picks[0].price_converted
+                            ? advice.picks[0].price_npr - advice.value_pick.price_npr : undefined} />
               </div>
             )}
             {advice.stretch_pick && (
               <div className="special">
                 <h3>Worth stretching?</h3>
                 <p className="muted">
-                  {budgetMax ? `${npr(advice.stretch_pick.price_npr - budgetMax)} over your budget, ` : ""}
+                  {budgetMax && advice.stretch_pick.price_npr != null ? `${npr(advice.stretch_pick.price_npr - budgetMax)} over your budget, ` : ""}
                   but clearly better for what you asked for.
                 </p>
                 <PickCard pick={advice.stretch_pick} tone="stretch" />

@@ -21,7 +21,7 @@ def test_meta(client):
     phone = next(c for c in m["categories"] if c["id"] == "phone")
     assert {"photography", "gaming", "battery"} <= {u["id"] for u in phone["uses"]}
     assert any(x["key"] == "has_5g" for x in phone["musts"])
-    assert m["stats"]["products"] == 22 and m["sample"] is True
+    assert m["stats"]["products"] == 23 and m["sample"] is True
     assert m["specs"]["battery_mah"]["unit"] == "mAh"
 
 
@@ -179,3 +179,47 @@ def test_manage_sources_from_the_page(tmp_path):
     assert c.delete("/api/sources/hukut").json()["removed"] == "hukut"
     names = {x["name"]: x for x in c.get("/api/sources").json()["sources"]}
     assert "hukut" not in names and names["newstore"]["enabled"] is False
+
+
+def test_device_sold_only_abroad_is_shown_with_a_converted_price(client):
+    m = client.get("/api/meta").json()
+    assert m["rates"]["rates"]["USD"] > 0 and m["rates"]["source"]
+    items = client.get("/api/products", params={"q": "himal fold"}).json()["items"]
+    fold = next(p for p in items if p["name"] == "Himal Fold 2")
+    assert fold["available_in_nepal"] is False and fold["best_price"] is None
+    assert fold["converted_price"] == round(899 * m["rates"]["rates"]["USD"], 2)
+    assert fold["converted_from"]["currency"] == "USD"
+    picks = client.post("/api/advise", json={"category": "phone", "uses": {"balanced": 1}, "top": 20}).json()["picks"]
+    assert any(p["name"] == "Himal Fold 2" and p["price_converted"] for p in picks)
+    picks = client.post("/api/advise", json={"category": "phone", "uses": {"balanced": 1}, "top": 20,
+                                             "nepal_only": True}).json()["picks"]
+    assert not any(p["name"] == "Himal Fold 2" for p in picks)
+
+
+def test_sorting_by_price_keeps_devices_sold_only_abroad(client):
+    r = client.get("/api/products", params={"category": "phone", "sort": "price", "priced_only": "true"}).json()
+    names = [p["name"] for p in r["items"]]
+    assert "Himal Fold 2" in names and r["total"] == 9          # every phone, the import at its converted price
+    prices = [p["best_price"] or p["converted_price"] for p in r["items"]]
+    assert prices == sorted(prices)
+
+
+def test_advice_can_list_every_match(client):
+    few = client.post("/api/advise", json={"category": "phone", "uses": {"balanced": 1}}).json()
+    every = client.post("/api/advise", json={"category": "phone", "uses": {"balanced": 1}, "top": 500}).json()
+    assert len(few["picks"]) == 5 and len(every["picks"]) == every["considered"] > 5
+    assert [p["name"] for p in every["picks"][:5]] == [p["name"] for p in few["picks"]]   # same order at the top
+    assert all("best_listed_only" in p for p in every["picks"])
+
+
+def test_website_jobs_run_beside_the_scheduled_scrape(tmp_path):
+    """A scheduled full scrape takes hours; Check/Update from the page must not wait for it."""
+    from devicescout.storage import Store
+    s = Store(tmp_path / "x.db")
+    sched = s.enqueue_job("scrape", [], None, origin="schedule")
+    mine = s.enqueue_job("check", ["hukut"], None, origin="ui")
+    assert s.claim_job(exclude_origin="schedule")["id"] == mine["id"]      # the website's lane
+    assert s.claim_job(exclude_origin="schedule") is None
+    assert s.claim_job(job_id=sched["id"])["id"] == sched["id"]            # the scheduler's own lane
+    s.request_cancel(mine["id"])
+    assert s.job(mine["id"])["cancel_requested"] and not s.job(sched["id"])["cancel_requested"]

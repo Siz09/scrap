@@ -353,3 +353,26 @@ tr.suspicious td:first-child a { text-decoration: line-through; }
   .uses { grid-template-columns: 1fr 1fr; }
   .detail-price strong { font-size: 1.3rem; }
 }
+
+.price-tag { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 0.35rem; }
+.price-tag .badge { font-weight: 500; }
+
+/* Device images: photos are product shots of any shape, so contain them on a light tile. */
+.device-img { display: block; object-fit: contain; background: #fff; border-radius: 10px; }
+.device-img.sm { width: 72px; height: 72px; flex: none; }
+.device-img.md { width: 100%; height: 150px; }
+.device-img.lg { width: 220px; height: 220px; flex: none; }
+.tile-img { display: block; margin: -0.25rem 0 0.6rem; }
+.pick-img { flex: none; }
+.detail-head { display: flex; gap: 1.25rem; align-items: flex-start; }
+.detail-head .detail-info { flex: 1; min-width: 0; }
+.compare-table th .device-img { margin-bottom: 0.4rem; }
+@media (max-width: 640px) {
+  .detail-head { flex-wrap: wrap; }
+  .device-img.lg { width: 100%; height: 220px; }
+  .device-img.sm { width: 56px; height: 56px; }
+}
+
+.more-picks { margin-top: 2rem; }
+.more-picks h3 { margin-bottom: 0.2rem; }
+.more-picks .btn { margin-top: 0.75rem; }

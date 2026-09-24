@@ -16,6 +16,7 @@ from scrapling.parser import Selector
 
 from ..models import Offer, Product
 from ..normalize import categorize, clean_title, finalize, parse_label_lines, parse_price, parse_variant
+from .backends import RateLimited
 from .base import Fetcher, Source
 
 log = logging.getLogger(__name__)
@@ -48,7 +49,7 @@ class ShopifySource(Source):
 
     def __init__(self, name: str, base_url: str, collections: list[str] | None = None,
                  currency: str = "NPR", region: str = "np", official: bool | None = None,
-                 max_pages: int = 10, category_hint: str | None = None, **_):
+                 max_pages: int = 200, category_hint: str | None = None, **_):
         self.name = name
         self.base = base_url.rstrip("/")
         self.collections = collections or []
@@ -63,20 +64,22 @@ class ShopifySource(Source):
         """Handles of the store's sale/festival collections, from /collections.json."""
         try:
             data = fetcher.get_json(f"{self.base}/collections.json?limit=250")
+        except RateLimited:
+            raise                    # the site limits us: stop it for this run
         except Exception as e:
             log.info("[%s] no collections list: %s", self.name, e)
             return []
         return [c["handle"] for c in data.get("collections", [])
                 if isinstance(c, dict) and self.SALE_HANDLE.search(c.get("handle", "") + " " + c.get("title", ""))]
 
-    def _pages(self, extra: list[str] = ()) -> Iterator[tuple[str, str]]:
+    PAGE = 250
+
+    def _targets(self, extra: list[str] = ()) -> list[tuple[str, str]]:
+        """The whole store first (/products.json), then named collections (their handle helps
+        categorise), then sale / festival collections."""
         handles = list(self.collections) + [h for h in extra if h not in self.collections]
-        targets = [(f"{self.base}/collections/{h}/products.json", h) for h in handles] or [
-            (f"{self.base}/products.json", "")
-        ]
-        for url, handle in targets:
-            for page in range(1, self.max_pages + 1):
-                yield f"{url}?limit=250&page={page}", handle
+        return [(f"{self.base}/products.json", "")] + [
+            (f"{self.base}/collections/{h}/products.json", h) for h in handles]
 
     def parse_product(self, prod: dict, collection: str = "") -> Product | None:
         title = (prod.get("title") or "").strip()
@@ -111,33 +114,46 @@ class ShopifySource(Source):
 
     def crawl(self, fetcher: Fetcher, limit: int = 500, **_) -> Iterator[Product]:
         n = 0
-        # Sale collections come last: the same products may already be in the regular ones.
-        sales = self.sale_collections(fetcher) if self.collections else []
+        seen: set = set()        # product ids already read this run (collections overlap)
+        sales = self.sale_collections(fetcher)
         if sales:
             log.info("[%s] sale collections: %s", self.name, ", ".join(sales))
-        for url, handle in self._pages(sales):
-            try:
-                data = fetcher.get_json(url)
-            except Exception as e:
-                log.warning("[%s] %s: %s", self.name, url, e)
-                continue
-            products = data.get("products") or []
-            if not products:
-                continue  # past the last page of this collection
-            for prod in products:
-                p = self.parse_product(prod, handle)
-                if p:
-                    n += 1
-                    yield p
-                    if n >= limit:
-                        return
+        for base_url, handle in self._targets(sales):
+            first_ids = None
+            for page in range(1, self.max_pages + 1):
+                url = f"{base_url}?limit={self.PAGE}&page={page}"
+                try:
+                    data = fetcher.get_json(url)
+                except RateLimited:
+                    raise                    # the site limits us: stop it for this run
+                except Exception as e:
+                    log.warning("[%s] %s: %s", self.name, url, e)
+                    break
+                products = data.get("products") or []
+                ids = [p.get("id") for p in products]
+                if not products or ids == first_ids:
+                    break            # past the last page (or the store ignores ?page= and repeats)
+                first_ids = first_ids or ids
+                for prod in products:
+                    pid = prod.get("id") or prod.get("handle")
+                    if pid in seen:
+                        continue
+                    seen.add(pid)
+                    p = self.parse_product(prod, handle)
+                    if p:
+                        n += 1
+                        yield p
+                        if n >= limit:
+                            return
+                if len(products) < self.PAGE:
+                    break            # a short page is the last one
 
 
 class WooCommerceSource(Source):
     """Any WooCommerce store, through the public Store API (/wp-json/wc/store/v1)."""
 
     def __init__(self, name: str, base_url: str, categories: list[str] | None = None,
-                 region: str = "np", official: bool | None = None, max_pages: int = 10,
+                 region: str = "np", official: bool | None = None, max_pages: int = 200,
                  category_hint: str | None = None, **_):
         self.name = name
         self.api = base_url.rstrip("/") + "/wp-json/wc/store/v1"
@@ -213,6 +229,8 @@ class WooCommerceSource(Source):
                 url = f"{self.api}/products?per_page=100&page={page}" + (f"&category={cat_id}" if cat_id else "")
                 try:
                     items = fetcher.get_json(url)
+                except RateLimited:
+                    raise                    # the site limits us: stop it for this run
                 except Exception as e:
                     log.warning("[%s] %s: %s", self.name, url, e)
                     break
@@ -225,3 +243,5 @@ class WooCommerceSource(Source):
                         yield p
                         if n >= limit:
                             return
+                if len(items) < 100:
+                    break            # a short page is the last one

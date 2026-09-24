@@ -23,6 +23,7 @@ from urllib.parse import urlencode
 
 from ..models import Offer, Product
 from ..normalize import categorize, clean_title, finalize, parse_price, parse_variant
+from .backends import RateLimited
 from .base import Fetcher, Source
 
 log = logging.getLogger(__name__)
@@ -144,12 +145,16 @@ class DarazSource(Source):
     def crawl(self, fetcher: Fetcher, limit: int = 200, **_) -> Iterator[Product]:
         try:
             fetcher.get(self.base + "/")  # pick up anti-bot cookies
+        except RateLimited:
+            raise                    # the site limits us: stop it for this run
         except Exception as e:
             log.warning("[%s] warm-up failed: %s", self.name, e)
         seen: set[str] = set()
         for url, hint in self.listing_urls():
             try:
                 items = extract_items(fetcher.get_json(url, headers={"Referer": self.base + "/"}))
+            except RateLimited:
+                raise                    # the site limits us: stop it for this run
             except Exception as e:
                 # Daraz often answers the JSON endpoint with a slider-captcha page. The same
                 # listing is embedded in the normal HTML page, which browsers can load.
@@ -159,6 +164,8 @@ class DarazSource(Source):
                                        headers={"Referer": self.base + "/"})
                     body = page.body.decode("utf-8", "replace") if isinstance(page.body, bytes) else str(page.body)
                     items = items_from_html(body)
+                except RateLimited:
+                    raise                    # the site limits us: stop it for this run
                 except Exception as e2:
                     log.warning("[%s] %s: %s", self.name, url, e2)
                     continue

@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from ..models import Category, Product
-from ..normalize import categorize, finalize
+from datetime import datetime, timezone
+
+from ..models import Category, Offer, Product
+from ..normalize import categorize, finalize, parse_foreign_price
 from .base import Fetcher, Source, text_of
 
 BASE = "https://www.gsmarena.com/"
@@ -79,6 +81,16 @@ class GSMArenaSource(Source):
         elif category == Category.UNKNOWN:
             category = Category.PHONE
 
+        # "Misc / Price": "$ 299.99 / € 279.00 / ₹ 24,999" -> an international reference price.
+        offers = []
+        price_text = next((v for k, v in raw.items() if k.endswith("/ Price")), "")
+        found = parse_foreign_price(price_text)
+        if found:
+            amount, currency = found
+            offers.append(Offer(source=self.name, url=page.url, price=amount, currency=currency,
+                                region="intl", seller="GSMArena (market price abroad)",
+                                scraped_at=datetime.now(timezone.utc).isoformat(timespec="seconds")))
+
         product = Product(
             source=self.name,
             url=page.url,
@@ -86,6 +98,7 @@ class GSMArenaSource(Source):
             brand=brand,
             category=category,
             raw_specs=raw,
+            offers=offers,
             image=page.css(".specs-photo-main img::attr(src)").get(),
         )
         return finalize(product)

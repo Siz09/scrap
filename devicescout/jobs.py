@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from .paths import source_status
 from .pipeline import IngestStats, ingest
 from .sources import Fetcher, build, load_entries
-from .sources.detect import detect, remember
+from .sources.detect import cached_platform, detect, remember
 from .storage import Store, open_store
 
 Log = Callable[[str], None]
@@ -28,13 +28,39 @@ def load_status() -> dict:
         return {}
 
 
-def _save_status(name: str, **fields) -> None:
+def clear_interrupted() -> None:
+    """A restart (rebuild, crash) interrupts runs: don't leave sources showing "Updating…"
+    or "Checking…" forever."""
     data = load_status()
-    data[name] = {**data.get(name, {}), **fields}
-    source_status().write_text(json.dumps(data, indent=2))
+    changed = False
+    for st in data.values():
+        if st.get("scrape_running"):
+            st["scrape_running"], changed = False, True
+        if st.get("check") == "RUNNING":
+            st.pop("check")
+            changed = True
+    if changed:
+        source_status().write_text(json.dumps(data, indent=2))
 
 
-def crawl_entry(entry: dict, fetcher, limit: int | None):
+_STATUS_LOCK = threading.Lock()   # the scheduled run and jobs from the website update it side by side
+
+
+def _save_status(name: str, **fields) -> None:
+    with _STATUS_LOCK:
+        data = load_status()
+        data[name] = {**data.get(name, {}), **fields}
+        tmp = source_status().with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2))
+        tmp.replace(source_status())
+
+
+CHECK_BROWSE_PAGES = 25   # a check samples a source: it shouldn't walk a whole site looking for products
+CHECK_SECONDS = 180       # ... nor spend more than 3 minutes on one source
+
+
+def crawl_entry(entry: dict, fetcher, limit: int | None, browse_pages: int | None = None,
+                seconds: float | None = None):
     limit = limit or 10**9            # 0/None: everything the site has
     if entry.get("delay") and hasattr(fetcher, "host_delay"):
         from urllib.parse import urlparse
@@ -42,6 +68,10 @@ def crawl_entry(entry: dict, fetcher, limit: int | None):
         if host:
             fetcher.host_delay[host] = float(entry["delay"])
     source = build(entry, fetcher)
+    if browse_pages and hasattr(source, "cfg") and hasattr(source.cfg, "browse_pages"):
+        source.cfg.browse_pages = min(source.cfg.browse_pages, browse_pages)
+    if seconds:
+        source.deadline = time.monotonic() + seconds
     if entry.get("type") == "gsmarena":
         brands = entry.get("brands", ["samsung"])
         per_brand = max(1, limit // max(1, len(brands)))
@@ -103,8 +133,11 @@ def run_check(entries: list[dict], log: Log = print, sample: int = 3, delay: flo
                     remember(e["name"], report)
                     detail = f"{report['platform']}: {report['evidence']}"
                 got = []
-                for p in crawl_entry(e, fetcher, limit=sample):
+                for p in crawl_entry(e, fetcher, limit=sample, browse_pages=CHECK_BROWSE_PAGES,
+                                         seconds=CHECK_SECONDS):
                     got.append(p)
+                    if store is not None:
+                        ingest(store, p)     # what a check finds is kept, like a small scrape
                     if len(got) >= sample:
                         break
                 if got:
@@ -132,12 +165,62 @@ def run_check(entries: list[dict], log: Log = print, sample: int = 3, delay: flo
     return results
 
 
+_SPEED = {"shopify": 0, "woocommerce": 0, "daraz": 0, "gsmarena": 1, "jsonld": 2}
+
+
+_ROLE = {"offers": 0, "reference": 1, "specs": 2, "reviews": 3}
+
+
+def scrape_order(entries: list[dict]) -> list[dict]:
+    """Stores first (prices are what the app is for), then listed-price sites, then spec and
+    review sites. Within each, quick sources first (store APIs: a whole shop in minutes) and
+    whole-site browser walks (hours) last, so data starts appearing right away."""
+    def key(e):
+        kind = e.get("type", "auto")
+        platform = cached_platform(e["name"]) if kind == "auto" else kind
+        return _ROLE.get(e.get("role", "offers"), 0), _SPEED.get(platform or "", 3)
+    return sorted(entries, key=key)
+
+
+def recently_checked(entries: list[dict], hours: float = 12) -> bool:
+    """Every source was checked within `hours` (so a restart needn't check them all again)."""
+    status = load_status()
+    now = datetime.now(timezone.utc)
+    for e in entries:
+        at = status.get(e["name"], {}).get("checked_at")
+        try:
+            if not at or (now - datetime.fromisoformat(at)).total_seconds() > hours * 3600:
+                return False
+        except ValueError:
+            return False
+    return True
+
+
+def refresh_rates(store, log: Log = print) -> None:
+    """Today's exchange rates, saved for the website: every foreign price is converted with them."""
+    from .currency import apply_stored, fetch_rates
+    info = fetch_rates()
+    if info:
+        store.set_kv("fx_rates", json.dumps(info))
+        usd = info["rates"].get("USD")
+        log(f"exchange rates: {info['source']} {info.get('date') or ''}" + (f", 1 USD = Rs {usd:g}" if usd else ""))
+        return
+    stored = store.get_kv("fx_rates")
+    if stored:
+        apply_stored(json.loads(stored))
+        log("exchange rates: feeds unreachable, using the last saved rates")
+    else:
+        log("exchange rates: feeds unreachable, using built-in estimates")
+
+
 def run_scrape(entries: list[dict], db_path, log: Log = print, limit: int = 0, delay: float = 2.0,
                mode: str = "static", respect_robots: bool = True, fetcher_factory=Fetcher,
                cancel: threading.Event | None = None, verbose: bool = False,
                progress: Progress = _noop) -> dict[str, int]:
     store = open_store(db_path)
     counts: dict[str, int] = {}
+    entries = scrape_order(entries)
+    refresh_rates(store, log)
     try:
         with fetcher_factory(mode=mode, delay=delay, respect_robots=respect_robots) as fetcher:
             for i, e in enumerate(entries):
@@ -188,13 +271,20 @@ def execute(job: dict, db_path, sources_path, fetcher_factory=Fetcher) -> str:
     store = open_store(db_path)
     cancel = threading.Event()
 
+    def alive() -> None:
+        # Long jobs (a whole-site scrape takes hours): keep telling the website the scraper is up.
+        store.set_kv("worker_heartbeat", _now())
+
     def log(line: str) -> None:
         if store.job(job["id"])["cancel_requested"]:
             cancel.set()
         store.job_log(job["id"], f"{time.strftime('%H:%M:%S')} {line}")
+        print(f"{time.strftime('%Y-%m-%d %H:%M:%S')}   {line}", flush=True)   # docker compose logs
+        alive()
 
     def progress(**p) -> None:
         store.job_progress(job["id"], **p)
+        alive()
 
     status = "done"
     try:
@@ -232,6 +322,7 @@ class LocalWorker:
     def _loop(self) -> None:
         store = open_store(self.db_path)
         store.fail_stale_jobs()
+        clear_interrupted()
         while True:
             job = store.claim_job()
             if job:

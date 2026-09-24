@@ -112,3 +112,14 @@ def test_import_from_sqlite(pg_url, tmp_path):
     s = PgStore(pg_url)
     assert import_sqlite(tmp_path / "old.db", s, log=lambda _: None) == 1
     assert s.stats()["products"] == 1
+
+
+def test_queue_lanes(pg_url):
+    s = PgStore(pg_url)
+    sched = s.enqueue_job("scrape", [], None, origin="schedule")
+    mine = s.enqueue_job("check", ["hukut"], None, origin="ui")
+    assert s.claim_job(exclude_origin="schedule")["id"] == mine["id"]
+    assert s.claim_job(exclude_origin="schedule") is None
+    assert s.claim_job(job_id=sched["id"])["id"] == sched["id"]
+    s.request_cancel(mine["id"])
+    assert s.job(mine["id"])["cancel_requested"] and not s.job(sched["id"])["cancel_requested"]

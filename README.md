@@ -27,14 +27,14 @@ Then open http://localhost:8765. Everything listens on `127.0.0.1` only, so noth
   - Disable or remove sources.
 
   Each source also shows how many pages and records have been stored from it.
-- **scraper**: checks every source once, then scrapes every enabled source completely every 6 hours (`SCRAPE_EVERY=12h` in `.env` to change it). It also runs jobs you start from the website within about 5 seconds. Every scraper in the fallback chain is installed:
+- **scraper**: scrapes every enabled source completely on start and then every 6 hours (quick stores first) (`SCRAPE_EVERY=12h` in `.env` to change it). It also runs jobs you start from the website within about 5 seconds. Every scraper in the fallback chain is installed:
   - fast HTTP and plain HTTP,
   - Chromium (`scrapling-dynamic`),
   - stealth Chromium (`scrapling-stealth`, patchright),
   - Crawl4AI.
 
   Firecrawl turns on if you set `FIRECRAWL_API_KEY`; it's a paid hosted service.
-- **db** (`postgres:17`): all the data, in three layers (see [Data layers](#data-layers)). Open it with any PostgreSQL tool (DBeaver, pgAdmin, `psql`) at `localhost:5433`, database and user `devicescout`, password `devicescout` (change it with `POSTGRES_PASSWORD` in `.env` before the first start).
+- **db** (`postgres:17`): all the data, in three layers (see [Data layers](#data-layers)). Open it with any PostgreSQL tool (DBeaver, pgAdmin, `psql`) at `localhost:55432`, database and user `devicescout`, password `devicescout` (change it with `POSTGRES_PASSWORD` in `.env` before the first start).
 
 If you ran an earlier version, the scraper copies what the old SQLite database collected into PostgreSQL on its first start.
 
@@ -234,6 +234,12 @@ Pages are fetched through a **chain of scrapers** (`sources/backends.py`):
 | 6 | Firecrawl | optional; hosted, needs `FIRECRAWL_API_KEY` |
 
 A response counts as blocked on 401/403/429/503, on a bot-wall page, or when HTML arrives where JSON was expected; the next scraper is then tried. The one that gets through is remembered for that site. A 404 is not retried. Install the optional scrapers with `pip install "devicescout[extra-scrapers]"`.
+
+## Prices abroad and exchange rates
+
+Every scrape starts by fetching today's exchange rates: Nepal Rastra Bank's official rates first, open.er-api.com if NRB is unreachable, the last saved rates if both are down. Any price a site shows in another currency (a USD price on a review site, GSMArena's "Price" row, an Indian store in INR) is converted to NPR with those rates.
+
+Devices no Nepali store sells are still shown: in Browse, Compare, the product page and the advisor, as "≈ Rs 1,25,860, converted from $899 · Not sold in Nepal yet". Hovering the price shows the rate and its date. Converted prices leave out import duty, VAT and shipping, so a device bought here usually costs more. They are never mixed into real Nepali prices, deals or price history. In the advisor, "Only sold in Nepal" hides them. A device with no price anywhere is shown as "No price yet" when you haven't set a budget.
 
 ## How the advisor decides
 

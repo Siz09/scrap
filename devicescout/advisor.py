@@ -1,7 +1,9 @@
 """Turn a buyer's needs + budget into a short, explained shortlist.
 
 Pipeline:
-  1. Hard filters: category, budget (NPR, local offers only), OS, brands, must-haves.
+  1. Hard filters: category, budget, OS, brands, must-haves. The budget uses the cheapest
+     Nepali price; a device not sold in Nepal uses its price abroad converted to NPR (marked
+     as such), unless the buyer wants Nepali sellers only.
      A must-have we have no data for does not exclude a device; it is flagged
      "unverified" and costs points, so incomplete listings don't win by omission.
   2. Blend the buyer's uses (e.g. photography x2 + battery x1) into one weight set,
@@ -71,6 +73,7 @@ class Needs:
     must: dict[str, tuple[str, Any]] = field(default_factory=dict)
     official_only: bool = False
     in_stock_only: bool = False
+    nepal_only: bool = False     # only devices a Nepali store sells (else converted prices abroad count too)
     top: int = 5
 
     @staticmethod
@@ -100,12 +103,17 @@ class Pick:
     weaknesses: list[str]
     warnings: list[str]
     where_to_buy: list[dict]
+    price_converted: bool = False        # price is a foreign price converted to NPR, not a Nepali price
 
     def to_dict(self) -> dict:
         p = self.ranked.product
+        conv = p.converted_offer if self.price_converted else None
         return {
-            "name": p.name, "brand": p.brand, "score": round(self.ranked.score, 1),
+            "key": p.key, "name": p.name, "brand": p.brand, "score": round(self.ranked.score, 1),
             "confidence": round(self.ranked.coverage, 2), "price_npr": self.price,
+            "price_converted": self.price_converted, "available_in_nepal": p.available_in_nepal,
+            "converted_from": {"price": conv.price, "currency": conv.currency, "seller": conv.seller,
+                               "url": conv.url} if conv else None,
             "strengths": self.strengths, "weaknesses": self.weaknesses, "warnings": self.warnings,
             "where_to_buy": self.where_to_buy, "specs": p.specs,
         }
@@ -199,9 +207,15 @@ def _where(p: Product, needs: Needs) -> list[dict]:
     offers = sorted(p.local_offers(needs.in_stock_only), key=lambda o: o.price_npr)
     if needs.official_only:
         offers = [o for o in offers if o.official]
-    return [{"seller": o.seller or o.source, "price_npr": o.price_npr, "variant": o.variant,
-             "official": o.official, "in_stock": o.in_stock, "listed_price_only": o.region == "np-ref",
-             "url": o.url} for o in offers[:3]]
+    out = [{"seller": o.seller or o.source, "price_npr": o.price_npr, "variant": o.variant,
+            "official": o.official, "in_stock": o.in_stock, "listed_price_only": o.region == "np-ref",
+            "url": o.url, "converted": False} for o in offers[:3]]
+    if not out and (conv := p.converted_offer):
+        # Not sold in Nepal: where the price came from, in its own currency.
+        out.append({"seller": conv.seller or conv.source, "price_npr": conv.price_npr, "variant": conv.variant,
+                    "official": None, "in_stock": None, "listed_price_only": True, "url": conv.url,
+                    "converted": True, "price": conv.price, "currency": conv.currency})
+    return out
 
 
 def _local_price(p: Product, needs: Needs) -> float | None:
@@ -213,26 +227,38 @@ def _local_price(p: Product, needs: Needs) -> float | None:
 
 
 def advise(products: list[Product], needs: Needs) -> Advice:
-    excluded = {"wrong_category": 0, "no_nepal_price": 0, "over_budget": 0, "under_min_budget": 0,
-                "os": 0, "brand": 0, "must_have": 0}
+    excluded = {"wrong_category": 0, "no_nepal_price": 0, "no_price": 0, "over_budget": 0,
+                "under_min_budget": 0, "os": 0, "brand": 0, "must_have": 0}
     ceiling = needs.budget_max * (1 + STRETCH) if needs.budget_max else None
     pool: list[Product] = []
     unverified: dict[int, list[str]] = {}
+    # id(product) -> (price in NPR or None, converted from a foreign price?)
+    prices: dict[int, tuple[float | None, bool]] = {}
+    seller_filters = needs.nepal_only or needs.official_only or needs.in_stock_only
 
     for p in products:
         if p.category != needs.category:
             excluded["wrong_category"] += 1
             continue
-        price = _local_price(p, needs)
+        price, converted = _local_price(p, needs), False
         if price is None:
-            excluded["no_nepal_price"] += 1
-            continue
-        if ceiling and price > ceiling:
+            # Not sold in Nepal (yet): still a candidate, at its price abroad converted to NPR,
+            # unless the buyer asked for Nepali sellers only.
+            conv = None if seller_filters else p.converted_offer
+            if seller_filters:
+                excluded["no_nepal_price"] += 1
+                continue
+            if conv is None and (needs.budget_max or needs.budget_min):
+                excluded["no_price"] += 1      # no price anywhere: can't tell if it fits the budget
+                continue
+            price, converted = (conv.price_npr, True) if conv else (None, False)
+        if ceiling and price is not None and price > ceiling:
             excluded["over_budget"] += 1
             continue
-        if needs.budget_min and price < needs.budget_min:
+        if needs.budget_min and price is not None and price < needs.budget_min:
             excluded["under_min_budget"] += 1
             continue
+        prices[id(p)] = (price, converted)
         os_unknown = needs.os and p.specs.get("os") is None
         if needs.os and not os_unknown and p.specs["os"] not in [o.lower() for o in needs.os]:
             excluded["os"] += 1
@@ -266,8 +292,13 @@ def advise(products: list[Product], needs: Needs) -> Advice:
             r.score -= UNVERIFIED_PENALTY * len(unverified[id(r.product)])
         return out
 
-    def price_of(r: Ranked) -> float:
-        return _local_price(r.product, needs)
+    def price_of(r: Ranked) -> float | None:
+        return prices[id(r.product)][0]
+
+    def buyable(r: Ranked) -> bool:
+        """Sold in Nepal at a known price: the only kind a 'save money' / 'stretch' pick can be."""
+        price, converted = prices[id(r.product)]
+        return price is not None and not converted
 
     # Order reasons by what the buyer asked for; the fixed quality share shouldn't lead them.
     importance: dict[str, float] = {}
@@ -276,11 +307,12 @@ def advise(products: list[Product], needs: Needs) -> Advice:
 
     def pick(r: Ranked, pool_size: int) -> Pick:
         s, w, warn = _explain(r, needs, unverified[id(r.product)], pool_size, importance)
-        return Pick(r, price_of(r), s, w, warn, _where(r.product, needs))
+        return Pick(r, price_of(r), s, w, warn, _where(r.product, needs), prices[id(r.product)][1])
 
     # Picks are scored only against devices the buyer can afford, so "top-tier X for this
     # budget" is literally true. Stretch candidates are judged on a combined scale.
-    affordable = [p for p in pool if not needs.budget_max or _local_price(p, needs) <= needs.budget_max]
+    affordable = [p for p in pool if not needs.budget_max
+                  or (prices[id(p)][0] is not None and prices[id(p)][0] <= needs.budget_max)]
     # Devices within stretch range but over budget count as "over budget" in the summary.
     excluded["over_budget"] += len(pool) - len(affordable)
     in_budget = sorted(scored(affordable), key=lambda r: r.score, reverse=True)
@@ -289,16 +321,17 @@ def advise(products: list[Product], needs: Needs) -> Advice:
     value_pick = None
     if in_budget:
         bar = in_budget[0].score * 0.85
-        good_enough = [r for r in in_budget if r.score >= bar]
-        v = min(good_enough, key=price_of)
-        if v is not in_budget[0]:
+        good_enough = [r for r in in_budget if r.score >= bar and buyable(r)]
+        v = min(good_enough, key=price_of, default=None)
+        if v is not None and v is not in_budget[0]:
             value_pick = pick(v, len(in_budget))
 
     stretch_pick = None
     if needs.budget_max and len(affordable) < len(pool):
         combined = scored(pool)
-        over = [r for r in combined if price_of(r) > needs.budget_max]
-        best_in = max((r.score for r in combined if price_of(r) <= needs.budget_max), default=None)
+        over = [r for r in combined if buyable(r) and price_of(r) > needs.budget_max]
+        best_in = max((r.score for r in combined if price_of(r) is not None and price_of(r) <= needs.budget_max),
+                      default=None)
         best_over = max(over, key=lambda r: r.score, default=None)
         if best_over and (best_in is None or best_over.score >= best_in + STRETCH_MIN_GAIN):
             stretch_pick = pick(best_over, len(combined))

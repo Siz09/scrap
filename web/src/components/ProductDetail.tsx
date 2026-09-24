@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { api, type ProductDetail as Detail } from "../api";
 import { useApp } from "../context";
 import { formatSpec, npr, relTime } from "../format";
+import PriceTag, { money } from "./PriceTag";
+import DeviceImage from "./DeviceImage";
 
 export default function ProductDetail({ productKey }: { productKey: string }) {
   const { meta, compare, toggleCompare } = useApp();
@@ -29,11 +31,13 @@ export default function ProductDetail({ productKey }: { productKey: string }) {
     <div className="detail">
       <a href="#/browse" className="back" onClick={(e) => { if (history.length > 1) { e.preventDefault(); history.back(); } }}>← Back</a>
       <header className="detail-head">
-        <div>
+        <DeviceImage productKey={p.key} name={p.name} size="lg" />
+        <div className="detail-info">
           <p className="muted">{p.brand} · {meta.categories.find((c) => c.id === p.category)?.label}</p>
           <h1>{p.name}</h1>
           <p className="detail-price">
-            <strong>{npr(p.best_price)}</strong>
+            <PriceTag local={p.best_price} converted={p.converted_price} from={p.converted_from}
+                      available={p.available_in_nepal} />
             {p.best_seller && <span className="muted"> lowest trusted price, at {p.best_seller}</span>}
           </p>
           {p.reference_price != null && (
@@ -78,7 +82,8 @@ export default function ProductDetail({ productKey }: { productKey: string }) {
         )}
         {intl.length > 0 && (
           <p className="muted small">
-            International: {intl.map((o) => `${o.seller} ${o.currency} ${o.price?.toLocaleString()} (${npr(o.price_npr)})`).join(" · ")}
+            Prices abroad (converted at today's rate, before import duty, VAT and shipping):{" "}
+            {intl.map((o) => `${o.seller}: ${money(o.price ?? 0, o.currency ?? "USD")} ≈ ${npr(o.price_npr)}`).join(" · ")}
           </p>
         )}
         <PriceHistory history={p.history} />

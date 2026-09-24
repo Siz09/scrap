@@ -25,6 +25,7 @@ from .normalize import canonical_key, clean_title
 from .pricing import flag_suspicious
 
 SOURCE_PRIORITY = {"gsmarena": 10}  # everything else defaults to 0
+VARIANT_SPECS = {"ram_gb", "storage_gb"}  # differ between variants of one model: never a "conflict"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS products (
@@ -157,10 +158,19 @@ class Store:
         self.db.execute("PRAGMA synchronous = NORMAL")
         self.db.executescript(SCHEMA)
         cols = {r["name"] for r in self.db.execute("PRAGMA table_info(products)")}
-        if "spec_candidates" not in cols:  # databases created before 0.3
-            self.db.execute("ALTER TABLE products ADD COLUMN spec_candidates TEXT NOT NULL DEFAULT '{}'")
+        # Databases created by older versions. Two threads may open a new file at once, so a
+        # column the other one just added is fine.
+        migrations = []
+        if "spec_candidates" not in cols:
+            migrations.append("ALTER TABLE products ADD COLUMN spec_candidates TEXT NOT NULL DEFAULT '{}'")
         if "valid_until" not in {r["name"] for r in self.db.execute("PRAGMA table_info(offers)")}:
-            self.db.execute("ALTER TABLE offers ADD COLUMN valid_until TEXT")
+            migrations.append("ALTER TABLE offers ADD COLUMN valid_until TEXT")
+        for sql in migrations:
+            try:
+                self.db.execute(sql)
+            except sqlite3.OperationalError as e:
+                if "duplicate column" not in str(e):
+                    raise
         self.db.commit()
 
     def close(self) -> None:
@@ -185,7 +195,8 @@ class Store:
         specs, spec_sources = {}, {}
         for k, cands in candidates.items():
             specs[k], spec_sources[k], conflicting = resolve_spec(cands)
-            if conflicting and p.source in cands and len(cands) > 1:
+            # RAM/storage differ between variants of one model (8/256 vs 6/128): not a disagreement.
+            if conflicting and p.source in cands and len(cands) > 1 and k not in VARIANT_SPECS:
                 self.log_issue(p.source, p.url, "conflict", k,
                                "sources disagree: " + ", ".join(f"{s}={v}" for s, v in cands.items()))
         if row is None:
@@ -356,12 +367,25 @@ class Store:
         self.db.commit()
         return self.job(job_id)
 
-    def claim_job(self) -> dict | None:
-        """Atomically take the oldest queued job (only one worker can win it)."""
+    @staticmethod
+    def _claim_filter(job_id: str | None, exclude_origin: str | None) -> tuple[str, list]:
+        where, args = ["status = 'queued'"], []
+        if job_id:
+            where.append("id = ?")
+            args.append(job_id)
+        if exclude_origin:
+            where.append("(origin IS NULL OR origin != ?)")
+            args.append(exclude_origin)
+        return " AND ".join(where), args
+
+    def claim_job(self, job_id: str | None = None, exclude_origin: str | None = None) -> dict | None:
+        """Atomically take the oldest queued job (only one worker can win it); or that job;
+        or the oldest not started by `exclude_origin` (the scheduler's own lane)."""
+        where, args = self._claim_filter(job_id, exclude_origin)
         row = self.db.execute(
-            """UPDATE jobs SET status = 'running', started_at = ?
-               WHERE id = (SELECT id FROM jobs WHERE status = 'queued' ORDER BY created_at LIMIT 1)
-               RETURNING id""", (_now(),)).fetchone()
+            f"""UPDATE jobs SET status = 'running', started_at = ?
+                WHERE id = (SELECT id FROM jobs WHERE {where} ORDER BY created_at LIMIT 1)
+                RETURNING id""", (_now(), *args)).fetchone()
         self.db.commit()
         return self.job(row["id"]) if row else None
 
@@ -393,9 +417,12 @@ class Store:
         self.db.execute("UPDATE jobs SET status = ?, finished_at = ? WHERE id = ?", (status, _now(), job_id))
         self.db.commit()
 
-    def request_cancel(self) -> int:
-        cur = self.db.execute("UPDATE jobs SET cancel_requested = 1 WHERE status IN ('queued', 'running')")
-        self.db.execute("UPDATE jobs SET status = 'cancelled', finished_at = ? WHERE status = 'queued'", (_now(),))
+    def request_cancel(self, job_id: str | None = None) -> int:
+        """Stop one job, or every queued/running job."""
+        only, args = (" AND id = ?", [job_id]) if job_id else ("", [])
+        cur = self.db.execute(f"UPDATE jobs SET cancel_requested = 1 WHERE status IN ('queued', 'running'){only}", args)
+        self.db.execute(f"UPDATE jobs SET status = 'cancelled', finished_at = ? WHERE status = 'queued'{only}",
+                        (_now(), *args))
         self.db.commit()
         return cur.rowcount
 
@@ -415,6 +442,11 @@ class Store:
     def product(self, key: str) -> Product | None:
         found = self.products(key=key)
         return found[0] if found else None
+
+    def set_image(self, key: str, url: str) -> None:
+        """An image found later (e.g. the page's og:image) for a product that had none."""
+        self.db.execute("UPDATE products SET image = ? WHERE key = ?", (url, key))
+        self.db.commit()
 
     def spec_sources(self, key: str) -> dict[str, str]:
         row = self.db.execute("SELECT spec_sources FROM products WHERE key = ?", (key,)).fetchone()

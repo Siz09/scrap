@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -21,7 +22,7 @@ from urllib.parse import urljoin, urlparse
 
 from ..models import Offer, Product
 from ..normalize import finalize, parse_label_lines, parse_price, parse_variant
-from .backends import NotFound
+from .backends import RateLimited, NotFound
 from .base import Fetcher, Source, _looks_like_js_shell, text_of
 
 log = logging.getLogger(__name__)
@@ -209,7 +210,44 @@ def extract_spec_rows(page, cfg: SiteConfig) -> dict[str, str]:
                 label, value = text_of(dt), text_of(dd)
                 if label and value and len(label) < 60:
                     raw.setdefault(label.rstrip(":"), value)
-    return raw
+        for label, value in _div_spec_rows(page):
+            raw.setdefault(label, value)
+    # Variant price rows ("12/256GB | Rs. 98,499") are prices, not specifications.
+    return {k: v for k, v in raw.items() if not _PRICE_ONLY.fullmatch(v.strip())}
+
+
+_PRICE_ONLY = re.compile(r"(?:Rs\.?|NPR|रु|\$|USD|₹)\s?[\d,]+(?:\.\d+)?(?:\s*/-)?", re.I)
+
+
+def _script_heavy(page) -> bool:
+    """A big page that is nearly all script (hukut product page: 135 KB of HTML, 809 characters
+    of text): whatever is missing from it is most likely drawn by JavaScript."""
+    body = getattr(page, "body", b"") or b""
+    try:
+        text = len(" ".join(page.css("body").first.get_all_text().split())) if page.css("body") else 0
+    except Exception:
+        return False
+    return len(body) > 30_000 and len(body) > 50 * max(text, 1)
+
+
+def _div_spec_rows(page) -> list[tuple[str, str]]:
+    """Spec sheets built from <div>s/<span>s instead of a table, inside a block whose class or id
+    says 'spec' (hukut and most Next.js stores): each row is an element with exactly two parts,
+    a short label and its value, e.g. <div><span>Battery</span><span>5000 mAh</span></div>."""
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for box in page.css("[class*=spec], [id*=spec], [class*=Spec], [id*=Spec]"):
+        for row in [box, *box.css("*")]:
+            kids = [c for c in row.children if c.tag not in ("script", "style", "svg", "button")]
+            if len(kids) != 2 or any(len(k.css("*")) > 4 for k in kids):
+                continue                       # not a label/value pair, or a whole group
+            label, value = text_of(kids[0]).rstrip(":").strip(), text_of(kids[1])
+            if (not label or not value or label == value or len(label) > 40 or len(value) > 300
+                    or not re.search(r"[A-Za-z]", label) or label.lower() in seen):
+                continue
+            seen.add(label.lower())
+            out.append((label, value))
+    return out
 
 
 _NPR_TEXT = re.compile(r"(?:price[^.\n]{0,40}?)?(?:rs\.?|npr|nrs\.?|रु\.?)\s*([\d,]{4,}(?:\.\d+)?)", re.I)
@@ -234,6 +272,8 @@ def sitemap_urls(fetcher: Fetcher, base_url: str, limit: int = 5000) -> Iterator
         robots = fetcher.get(root + "/robots.txt")
         queue += re.findall(r"(?im)^\s*sitemap:\s*(\S+)", robots.body.decode(errors="replace")
                             if isinstance(robots.body, bytes) else str(robots.body))
+    except RateLimited:
+        raise                    # the site limits us: stop it for this run
     except Exception as e:
         log.info("no robots.txt sitemap for %s: %s", root, e)
     queue += [root + p for p in ("/sitemap.xml", "/sitemap_index.xml", "/product-sitemap.xml", "/sitemap_products_1.xml")]
@@ -246,6 +286,8 @@ def sitemap_urls(fetcher: Fetcher, base_url: str, limit: int = 5000) -> Iterator
         seen_maps.add(sm)
         try:
             page = fetcher.get(sm)
+        except RateLimited:
+            raise                    # the site limits us: stop it for this run
         except Exception:
             continue
         body = page.body.decode(errors="replace") if isinstance(page.body, bytes) else str(page.body)
@@ -267,7 +309,11 @@ class GenericSource(Source):
     def __init__(self, cfg: SiteConfig):
         self.cfg = cfg
         self.name = cfg.name
-        self.fetch_mode = cfg.fetch_mode
+        self.fetch_mode = cfg.fetch_mode      # product pages
+        self.listing_mode = cfg.fetch_mode    # category / listing pages (often JS-built even when
+                                              # product pages carry their data in plain HTML: hukut)
+        self._browser_wins = 0
+        self.deadline: float | None = None    # time.monotonic() after which a crawl stops (checks)
         self._hints: dict[str, str] = {}   # product url -> words of the listing it was found on
 
     def _wanted(self, url: str) -> bool:
@@ -282,7 +328,7 @@ class GenericSource(Source):
         seen: set[str] = set()
         if not self.cfg.product_link_css:
             for u in sitemap_urls(fetcher, self._base()):
-                if u not in seen and self._wanted(u):
+                if u not in seen and self._wanted(u) and self._looks_like_product(u):
                     seen.add(u)
                     yield u
             if not seen:
@@ -312,31 +358,59 @@ class GenericSource(Source):
             yield from super().crawl(fetcher, limit, **opts)
             return
         done: set[str] = set()
+        seeds: list[str] = []      # sitemap entries that are category / brand pages, not products
         n = 0
         for url in sitemap_urls(fetcher, self._base()):
-            if n >= limit:
+            if n >= limit or (self.deadline and time.monotonic() > self.deadline):
                 return
             if url in done or not self._wanted(url):
+                continue
+            if not self._looks_like_product(url):
+                seeds.append(url)  # itti's sitemap: /laptops-by-brands/asus-laptop-nepal/zenbook-series
                 continue
             done.add(url)
             product = self._product(fetcher, url)
             if product:
                 n += 1
                 yield product
-        if done and not self.cfg.crawl_site:
+            else:
+                seeds.append(url)  # a category page after all: walk it for its products
+        if n and not self.cfg.crawl_site:
             return
-        for product in self._site_crawl(fetcher, limit - n, skip=done):
+        # No usable product sitemap: walk the site, starting from the category pages it listed.
+        for product in self._site_crawl(fetcher, limit - n, skip=done, seeds=seeds):
             yield product
+
+    def _is_listing(self, page) -> bool:
+        """Many product links and no product data of its own: a category page, whatever its URL."""
+        if extract_jsonld_product(page):
+            return False
+        host = urlparse(page.url).netloc
+        return sum(1 for u in self._links(page, host) if self._looks_like_product(u)) >= 6
 
     def _product(self, fetcher: Fetcher, url: str, page=None) -> Product | None:
         try:
             page = page or fetcher.get(url, mode=self.fetch_mode)
+            if self._is_listing(page):
+                return None
             product = self.parse(page)
-            if product is None and self.fetch_mode != "dynamic" and _looks_like_js_shell(page):
-                product = self.parse(fetcher.get(url, mode="dynamic"))
+            # A script-built page may carry its price in plain HTML (JSON-LD) but draw the spec
+            # sheet only in the browser (hukut): render it when the plain page had few specs.
+            thin = product is None or (len(product.raw_specs) < 5 and _script_heavy(page))
+            if thin and self.fetch_mode != "dynamic" and _looks_like_js_shell(page):
+                rendered = fetcher.get(url, mode="dynamic")
+                better = None if self._is_listing(rendered) else self.parse(rendered)
+                if better and (product is None or len(better.raw_specs) > len(product.raw_specs)):
+                    product = better
+                    self._browser_wins += 1
+                    if self._browser_wins >= 2:     # this site's product pages need the browser
+                        log.info("[%s] product pages need a browser; rendering them from now on", self.name)
+                        self.fetch_mode = "dynamic"
             return product
         except NotFound:
             return None
+        except RateLimited:
+            raise                    # the site limits us: stop it for this run
         except Exception as e:
             log.warning("[%s] failed %s: %s", self.name, url, e)
             return None
@@ -355,15 +429,19 @@ class GenericSource(Source):
         path = u.path.rstrip("/") or "/"
         return f"{u.scheme}://{u.netloc}{path}" + (f"?{query}" if query else "")
 
-    def _site_crawl(self, fetcher: Fetcher, limit: int, skip: set[str] = frozenset()) -> Iterator[Product]:
+    def _site_crawl(self, fetcher: Fetcher, limit: int, skip: set[str] = frozenset(),
+                    seeds: list[str] = ()) -> Iterator[Product]:
         from collections import deque
         host = urlparse(self._base()).netloc
         listings = deque(dict.fromkeys(self._canonical(u, False)
-                                       for u in [*self.cfg.start_urls, self._base()] if u))
+                                       for u in [*self.cfg.start_urls, *seeds, self._base()] if u))
         products: deque[str] = deque()
         queued = set(listings) | set(skip)
         walked = n = 0
         while (products or listings) and n < limit:
+            if self.deadline and time.monotonic() > self.deadline:
+                log.info("[%s] time limit reached after %d listing pages", self.name, walked)
+                break
             if products:
                 url, is_product = products.popleft(), True
             else:
@@ -379,10 +457,12 @@ class GenericSource(Source):
                     walked += 1
             except NotFound:
                 continue
+            except RateLimited:
+                raise                    # the site limits us: stop it for this run
             except Exception as e:
                 log.info("[%s] %s: %s", self.name, url, e)
                 continue
-            if is_product:
+            if is_product or extract_jsonld_product(page):   # a product with a short URL (/iphone-air)
                 product = self._product(fetcher, url, page)
                 if product:
                     n += 1
@@ -399,6 +479,9 @@ class GenericSource(Source):
                             self._hints[link] = listing_path.replace("-", " ").replace("/", " ")
                 else:
                     link = self._canonical(link, False)
+                    slug_words = set(re.split(r"[-_/]+", urlparse(link).path.lower()))
+                    if slug_words & self._NOT_PRODUCT:
+                        continue            # about / terms / contact pages lead nowhere useful
                     if link not in queued:
                         queued.add(link)
                         # Pagination and category pages first, so products start flowing early.
@@ -423,9 +506,32 @@ class GenericSource(Source):
                 out.append(full)
         return list(dict.fromkeys(out))
 
+    _NOT_PRODUCT = {"about", "terms", "conditions", "condition", "privacy", "policy", "policies", "career",
+                    "careers", "contact", "faq", "faqs", "warranty", "returns", "refund", "shipping",
+                    "delivery", "locations", "branches", "login", "register", "account", "blog", "news"}
+
+    _FILLER = {"price", "prices", "in", "nepal", "np", "best", "buy", "online", "latest", "new", "2024", "2025",
+               "2026", "2027"}
+    _PLURALS = {"laptops", "notebooks", "phones", "smartphones", "mobiles", "tablets", "monitors", "watches",
+                "smartwatches", "earbuds", "headphones", "speakers", "cameras", "accessories", "desktops",
+                "computers", "printers", "routers", "chargers", "cables", "cases", "tvs", "televisions",
+                "consoles", "gadgets", "products", "deals", "offers", "brands", "collection",
+                "collections", "category", "categories"}
+
     def _looks_like_product(self, url: str) -> bool:
         # Product pages have a long, specific slug: /samsung-galaxy-a56-5g-8gb-256gb
-        slug = urlparse(url).path.strip("/").split("/")[-1]
+        parts = urlparse(url).path.strip("/").split("/")
+        slug = parts[-1]
+        words = set(re.split(r"[-_]+", slug.lower()))
+        if len(parts) >= 2 and parts[-2].lower() in ("product", "products", "p", "item", "product-detail") \
+                and len(slug) >= 3 and not words & self._NOT_PRODUCT:
+            return True                     # /product/<anything>: the store says it's a product
+        if words & self._NOT_PRODUCT:       # /about-itti-pvt-ltd, /itti-terms-and-conditions
+            return False
+        # "/dell-pro-plus-laptops", "/blackview-smartphones-price-nepal": a list of laptops, not one.
+        meaningful = [w for w in re.split(r"[-_]+", slug.lower()) if w not in self._FILLER]
+        if meaningful and meaningful[-1] in self._PLURALS:
+            return False
         looks_like_model = bool(re.search(r"\d", slug)) or len(slug.split("-")) >= 4
         return (len(slug) >= 10 and looks_like_model
                 and not (self.cfg.url_exclude and re.search(self.cfg.url_exclude, url, re.I)))
@@ -464,7 +570,7 @@ class GenericSource(Source):
         """Fetch a listing page. If it has no product links (a JavaScript-built page whose product
         cards appear only after scripts run), render it in a browser."""
         host = urlparse(url).netloc
-        if self.fetch_mode == "dynamic":     # already known: this site draws its listings in the browser
+        if self.listing_mode == "dynamic":   # already known: this site draws its listings in the browser
             return fetcher.get(url, mode="dynamic", scroll=True)
         page = fetcher.get(url)
         links = self._links(page, host) + self._embedded_links(page, host)
@@ -474,6 +580,8 @@ class GenericSource(Source):
         if not products:
             try:
                 rendered = fetcher.get(url, mode="dynamic", scroll=True)
+            except RateLimited:
+                raise                    # the site limits us: stop it for this run
             except Exception as e:
                 log.info("[%s] browser render failed for %s: %s", self.name, url, e)
                 return page
@@ -482,7 +590,7 @@ class GenericSource(Source):
             log.info("[%s] %s in a browser: %d links, %d look like products%s", self.name, url, len(rlinks),
                      len(rproducts), f" (e.g. {rproducts[0]})" if rproducts else "")
             if rproducts or len(rlinks) > len(links):
-                self.fetch_mode = "dynamic"      # product pages on this site probably need it too
+                self.listing_mode = "dynamic"    # product pages are tried plain first (much faster)
                 return rendered
         return page
 
@@ -495,6 +603,8 @@ class GenericSource(Source):
             url = queue.pop(0)
             try:
                 page = self._page(fetcher, url)
+            except RateLimited:
+                raise                    # the site limits us: stop it for this run
             except Exception as e:
                 log.info("[%s] %s: %s", self.name, url, e)
                 continue
@@ -509,6 +619,33 @@ class GenericSource(Source):
                 if u not in found and u not in visited and u not in queue and self._looks_like_product(u):
                     found.add(u)
                     yield u
+
+    def _variant_offers(self, ld: dict, name: str, url: str, currency: str | None) -> list[Offer]:
+        """schema.org ProductGroup: each hasVariant is a Product with its own price (8/128, 8/256 ...)."""
+        if not _is_type(ld, "ProductGroup"):
+            return []
+        variants = ld.get("hasVariant") or []
+        if isinstance(variants, dict):
+            variants = [variants]
+        out, now = [], datetime.now(timezone.utc).isoformat(timespec="seconds")
+        for v in variants:
+            if not isinstance(v, dict):
+                continue
+            vo = v.get("offers") or {}
+            if isinstance(vo, list):
+                vo = vo[0] if vo else {}
+            price = parse_price(vo.get("price") or vo.get("lowPrice")) if isinstance(vo, dict) else None
+            if price is None:
+                continue
+            vname = str(v.get("name") or name)
+            availability = str(vo.get("availability", ""))
+            out.append(Offer(
+                source=self.name, url=url, price=price, currency=vo.get("priceCurrency") or currency,
+                in_stock=None if not availability else "InStock" in availability, scraped_at=now,
+                region=self.cfg.region, seller=self.name, official=self.cfg.official,
+                variant=parse_variant(vname) or (vname if vname != name else None),
+            ))
+        return out
 
     def parse(self, page) -> Product | None:
         ld = extract_jsonld_product(page) or {}
@@ -598,6 +735,12 @@ class GenericSource(Source):
             image = image[0] if image else None
         if isinstance(image, dict):
             image = image.get("url")
+        if not isinstance(image, str) or not image:
+            # The image the page publishes for sharing (almost every store page has one).
+            image = (page.css("meta[property='og:image']::attr(content)").get()
+                     or page.css("meta[name='twitter:image']::attr(content)").get())
+        if isinstance(image, str) and image:
+            image = page.urljoin(image)
 
         offers = []
         if price is not None:
@@ -609,8 +752,13 @@ class GenericSource(Source):
                 original_price=(original or embedded_original)
                 if (original or embedded_original) and price and (original or embedded_original) > price else None,
             ))
+        variant_offers = self._variant_offers(ld, name, page.url, currency)
+        if variant_offers:
+            offers = variant_offers      # one price per storage/colour option (ProductGroup)
         if not ld and not offers and not specs and len(raw) < 3:
             return None   # a category, article or landing page, not a product
+        if not ld and not offers and self.cfg.region == "np":
+            return None   # a shop page with neither product data nor a price: a category or info page
         product = Product(
             source=self.name,
             url=page.url,

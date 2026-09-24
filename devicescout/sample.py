@@ -137,5 +137,13 @@ def build_sample(path):
                                 scraped_at=now.isoformat(timespec="seconds"), seller="Too Good To Be True Deals"))
         store.upsert(Product(source="sample", url=f"https://example.com/sample/{i}", name=name, brand=brand,
                              category=cat, specs=specs, offers=offers, rating=rating, review_count=reviews))
+    # A phone sold only abroad: shown with its price converted to NPR, marked "not sold in Nepal".
+    store.upsert(Product(
+        source="sample", url="https://example.com/sample/abroad", name="Himal Fold 2", brand="Himal",
+        category=C.PHONE, rating=4.4, review_count=210,
+        specs={"os": "android", "ram_gb": 12, "storage_gb": 512, "battery_mah": 4800, "main_camera_mp": 50,
+               "refresh_rate_hz": 120, "has_5g": True, "has_nfc": True, "release_year": 2026, "os_upgrades": 5},
+        offers=[Offer(source="sample-abroad", url="https://example.com/sample/abroad/us", price=899, currency="USD",
+                      region="intl", seller="Example US store", scraped_at=now.isoformat(timespec="seconds"))]))
     store.close()
     return path

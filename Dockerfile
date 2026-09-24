@@ -39,7 +39,7 @@ RUN pip install "crawl4ai>=0.7" "firecrawl-py>=4" \
  && chmod -R a+rX /ms-playwright \
  && rm -rf /var/lib/apt/lists/*
 USER scout
-CMD ["devicescout", "schedule", "--every", "6h", "--check-first"]
+CMD ["devicescout", "schedule", "--every", "6h"]
 
 # ---- web (default target) ----------------------------------------------------------------
 FROM base AS web

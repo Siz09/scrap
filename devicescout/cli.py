@@ -288,6 +288,8 @@ def cmd_schedule(args) -> None:
         signal.signal(sig, lambda *_: stop.set())
     store = open_store(args.db)
     store.fail_stale_jobs()
+    from .jobs import clear_interrupted
+    clear_interrupted()
     _import_legacy(store)
 
     def say(line: str) -> None:
@@ -296,44 +298,64 @@ def cmd_schedule(args) -> None:
     def heartbeat() -> None:
         store.set_kv("worker_heartbeat", datetime.now(timezone.utc).isoformat(timespec="seconds"))
 
-    def run(kind: str, origin: str) -> None:
-        # Scheduled runs go through the same queue, so the website shows their progress too.
-        store.enqueue_job(kind, [], args.limit, origin=origin)
-        drain()
+    def run_job(job: dict) -> None:
+        say(f"{job['kind']} job {job['id']} ({job['origin']}) started")
+        status = execute(job, args.db, args.sources, fetcher_factory=Fetcher)   # prints its log as it goes
+        say(f"{job['kind']} job {job['id']} {status}")
 
     def drain() -> None:
-        while not stop.is_set() and (job := store.claim_job()):
-            say(f"{job['kind']} job {job['id']} ({job['origin']}) started")
-            status = execute(job, args.db, args.sources, fetcher_factory=Fetcher)
-            for line in (store.job(job["id"]) or {}).get("log", [])[-3:]:
-                say("  " + line)
-            say(f"{job['kind']} job {job['id']} {status}")
+        """Jobs started from the website: run right away, even while a scheduled scrape
+        (hours long) is going on in its own lane."""
+        while not stop.is_set() and (job := store.claim_job(exclude_origin="schedule")):
+            run_job(job)
             heartbeat()
 
-    from .sources.backends import describe
-    store.set_kv("worker_scrapers", json.dumps(describe()))   # what *this* container can run, for the website
-    heartbeat()
+    def scheduled(kinds: list[str]) -> threading.Thread:
+        """The scheduled run, in its own lane (thread + database connection). It still goes
+        through the job queue, so the website shows its progress."""
+        def lane() -> None:
+            own = open_store(args.db)
+            try:
+                for kind in kinds:
+                    if stop.is_set():
+                        break
+                    queued = own.enqueue_job(kind, [], args.limit, origin="schedule")
+                    job = own.claim_job(job_id=queued["id"])
+                    if job:
+                        run_job(job)
+            finally:
+                own.close()
+        t = threading.Thread(target=lane, daemon=True, name="scheduled-run")
+        t.start()
+        return t
+
+    from .jobs import recently_checked, select_entries
+    first = ["scrape"]
+    if args.check_first:
+        if recently_checked(select_entries(args.sources, [])):
+            say("all sources were checked in the last 12 h; going straight to scraping")
+        else:
+            first = ["check", "scrape"]
+    next_run = time.monotonic() + args.start_in
     if args.start_in:
         say(f"first scheduled run in {args.start_in / 3600:.1f} h; watching for jobs from the website")
-        begin = time.monotonic() + args.start_in
-        while not stop.is_set() and time.monotonic() < begin:
-            heartbeat()
-            drain()
-            stop.wait(5)
-    if args.check_first and not stop.is_set():
-        run("check", "schedule")
+    lane: threading.Thread | None = None
     while not stop.is_set():
-        run("scrape", "schedule")
-        if stop.is_set():
-            break
-        if args.once:
-            break
-        next_run = time.monotonic() + args.every + random.uniform(0, args.jitter)
-        say(f"next scheduled scrape in {(next_run - time.monotonic()) / 3600:.1f} h; watching for jobs from the website")
-        while not stop.is_set() and time.monotonic() < next_run:
-            heartbeat()
-            drain()
-            stop.wait(5)
+        if lane is None and time.monotonic() >= next_run:
+            lane = scheduled(first)
+            first = ["scrape"]
+        if lane is not None and not lane.is_alive():
+            lane = None
+            if args.once:
+                break
+            next_run = time.monotonic() + args.every + random.uniform(0, args.jitter)
+            say(f"next scheduled scrape in {(next_run - time.monotonic()) / 3600:.1f} h; "
+                "watching for jobs from the website")
+        heartbeat()
+        drain()
+        stop.wait(2)
+    if lane is not None:
+        lane.join(timeout=30)
     say("scheduler stopped")
 
 
@@ -377,6 +399,104 @@ def cmd_quality(args) -> None:
     print("issues: " + (", ".join(f"{v} {k}" for k, v in q["by_kind"].items()) or "none"))
     for r in q["top"]:
         print(f"  {r['n']:>5}  {r['source']:<15} {r['kind']:<13} {r['field']:<16} e.g. {r['example'][:70]}")
+
+
+def cmd_inspect(args) -> None:
+    """What a page looks like to the scraper, plain and in a browser: for fixing a failing source."""
+    import re as _re
+    from urllib.parse import urlparse
+
+    from .sources.generic import GenericSource, SiteConfig, _embedded_json, jsonld_objects
+
+    host = urlparse(args.url).netloc
+    src = GenericSource(SiteConfig(name="inspect", base_url=f"{urlparse(args.url).scheme}://{host}"))
+    with Fetcher(delay=0.5) as f:
+        for mode in ("static", "dynamic"):
+            print(f"\n=== {mode} ({'plain HTTP' if mode == 'static' else 'browser, scrolled'}) ===")
+            try:
+                page = f.get(args.url, mode=mode, scroll=mode == "dynamic", fallback=mode == "static")
+            except Exception as e:
+                print(f"failed: {type(e).__name__}: {str(e)[:200]}")
+                continue
+            body = page.body if isinstance(page.body, str) else bytes(page.body).decode("utf-8", "replace")
+            text = " ".join((page.css("body").first.get_all_text(separator=" ") if page.css("body") else "").split())
+            links = src._links(page, host)
+            emb = src._embedded_links(page, host)
+            products = [u for u in dict.fromkeys(links + emb) if src._looks_like_product(u)]
+            others = [u for u in links if u not in products]
+            print(f"scraper: {f.summary()}   status: {getattr(page, 'status', '?')}   html: {len(body):,} chars"
+                  f"   visible text: {len(text):,} chars")
+            print(f"title: {(page.css('title::text').get() or '').strip()[:100]!r}")
+            print(f"links on this site: {len(links)}   from page data: {len(emb)}   look like products: {len(products)}")
+            for u in products[:args.show]:
+                print(f"  product? {u}")
+            for u in others[:args.show]:
+                print(f"  other    {u}")
+            ld = [str(o.get("@type")) for o in jsonld_objects(page)]
+            print(f"JSON-LD types: {ld or 'none'}")
+            blobs = _embedded_json(page)
+            print(f"embedded page data: {len(blobs)} blob(s)"
+                  + (f", top keys: {list(blobs[0])[:12]}" if blobs and isinstance(blobs[0], dict) else ""))
+            prices = _re.findall(r"(?:Rs\.?|NPR|रु)\s?[\d,]{3,}", text)
+            print(f"prices visible: {len(prices)}  e.g. {prices[:5]}")
+            clickable = len(page.css("[onclick], [data-href], [data-url]"))
+            if clickable:
+                print(f"elements navigating by script (onclick/data-href): {clickable}")
+            _inspect_specs(src, page, blobs)
+            f.stats.clear()
+
+
+def _inspect_specs(src, page, blobs) -> None:
+    """What the product parser gets from this page, and where else specs might be hiding."""
+    from .sources.base import text_of
+
+    try:
+        p = src.parse(page)
+    except Exception as e:
+        print(f"as a product: parse failed: {type(e).__name__}: {str(e)[:200]}")
+        return
+    if not p:
+        print("as a product: not a product page")
+        return
+    price = p.offers[0].price if p.offers else None
+    print(f"as a product: {p.name!r}  brand: {p.brand}  category: {p.category.value}  price: {price}"
+          f"  offers: {len(p.offers)}  image: {'yes' if p.image else 'no'}")
+    print(f"specs found on the page: {len(p.raw_specs)}   understood: {len(p.specs)}")
+    for k, v in list(p.raw_specs.items())[:40]:
+        print(f"  {k[:40]:<40} {str(v)[:80]}")
+    if p.specs:
+        print("understood as: " + ", ".join(f"{k}={v}" for k, v in list(p.specs.items())[:30]))
+    # Places the parser doesn't read yet, so a missing spec sheet can be tracked down.
+    print(f"spec-like markup: table rows {len(page.css('table tr'))}, <dl> {len(page.css('dl'))}, "
+          f"elements with 'spec' in class/id {len(page.css('[class*=spec], [id*=spec]'))}")
+    keys: set[str] = set()
+
+    def walk(node, depth=0):
+        if depth > 12:
+            return
+        if isinstance(node, dict):
+            keys.update(k for k in node if any(w in k.lower() for w in ("spec", "attribute", "feature")))
+            for v in node.values():
+                walk(v, depth + 1)
+        elif isinstance(node, list):
+            for v in node[:200]:
+                walk(v, depth + 1)
+
+    for blob in blobs:
+        walk(blob)
+    if keys:
+        print(f"spec-like keys in page data: {sorted(keys)[:15]}")
+    # The spec block's markup, so a sheet the parser still misses can be taught to it.
+    boxes = [b for b in page.css("[class*=spec], [id*=spec]") if len(text_of(b)) > 40]
+    if boxes:
+        box = min(boxes, key=lambda b: len(b.html_content))   # the tightest block with real text
+        print("spec block markup (start):")
+        print("  " + " ".join(box.html_content.split())[:900])
+    body = page.body if isinstance(page.body, str) else bytes(page.body).decode("utf-8", "replace")
+    if "self.__next_f" in body:
+        i = body.lower().find("battery")
+        print("Next.js page data in scripts: yes"
+              + (f"; around 'battery': {' '.join(body[max(0, i - 200):i + 200].split())!r}" if i >= 0 else ""))
 
 
 def cmd_scrapers(args) -> None:
@@ -526,6 +646,11 @@ def main(argv: list[str] | None = None) -> None:
 
     s = sub.add_parser("reprocess", help="rebuild the catalogue from stored raw records (after parser updates)")
     s.set_defaults(func=cmd_reprocess)
+
+    s = sub.add_parser("inspect", help="show what a page looks like to the scraper (plain and in a browser)")
+    s.add_argument("url")
+    s.add_argument("--show", type=int, default=8, help="example links to print")
+    s.set_defaults(func=cmd_inspect)
 
     s = sub.add_parser("raw", help="what the raw layer holds per website (pages fetched, records parsed)")
     s.set_defaults(func=cmd_raw)

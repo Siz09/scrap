@@ -1,6 +1,8 @@
 import type { Pick } from "../api";
 import { useApp } from "../context";
 import { formatSpec, keySpecs, npr } from "../format";
+import PriceTag, { money } from "./PriceTag";
+import DeviceImage from "./DeviceImage";
 
 function confidenceLabel(c: number): [string, string] {
   if (c >= 0.75) return ["High", "good"];
@@ -24,11 +26,17 @@ export default function PickCard({ pick, rank, tone, savings }: {
     <article className={`card pick ${tone ?? ""}`}>
       <div className="pick-head">
         {rank && <span className="pick-rank" aria-label={`Rank ${rank}`}>{rank}</span>}
+        <a href={`#/product/${encodeURIComponent(pick.key)}`} className="pick-img" tabIndex={-1} aria-hidden="true">
+          <DeviceImage productKey={pick.key} name={pick.name} size="sm" />
+        </a>
         <div className="pick-title">
           <h3><a href={`#/product/${encodeURIComponent(pick.key)}`}>{pick.name}</a></h3>
           <div className="pick-price">
-            <strong>{npr(pick.price_npr)}</strong>
-            {pick.best_seller && <span className="muted"> at {pick.best_seller}</span>}
+            <PriceTag local={pick.price_converted ? null : pick.price_npr} converted={pick.price_converted ? pick.price_npr : null}
+                      from={pick.converted_from} available={pick.available_in_nepal} />
+            {pick.best_seller && !pick.price_converted && (pick.best_listed_only
+              ? <span className="muted" title="A price a Nepali tech site publishes, not a shop's offer"> listed price ({pick.best_seller})</span>
+              : <span className="muted"> at {pick.best_seller}</span>)}
             {pick.best_official && <span className="badge good">Official</span>}
             {savings != null && savings > 0 && <span className="badge good">Save {npr(savings)}</span>}
           </div>
@@ -66,11 +74,15 @@ export default function PickCard({ pick, rank, tone, savings }: {
             {pick.where_to_buy.map((o) => (
               <li key={o.url + (o.variant ?? "")}>
                 <a href={o.url} target="_blank" rel="noopener noreferrer">{o.seller}</a>
-                <span className="price">{npr(o.price_npr)}</span>
+                <span className="price">
+                  {o.converted && o.price != null && o.currency
+                    ? <>≈ {npr(o.price_npr)} <span className="muted small">({money(o.price, o.currency)} abroad)</span></>
+                    : npr(o.price_npr)}
+                </span>
                 {o.variant && <span className="tag">{o.variant}</span>}
                 {o.official && <span className="badge good">Official</span>}
                 {o.in_stock === false && <span className="badge low">Out of stock</span>}
-                {o.listed_price_only && <span className="badge">Listed price</span>}
+                {o.listed_price_only && !o.converted && <span className="badge">Listed price</span>}
               </li>
             ))}
           </ul>

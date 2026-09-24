@@ -59,7 +59,18 @@ def test_shopify_crawl_stops_at_empty_page():
     src = ShopifySource(name="shop", base_url="https://shop.com.np", collections=["phones"], max_pages=5)
     products = list(src.crawl(f))
     assert [p.name for p in products] == ["Samsung Galaxy A56 5G", "Spigen Tough Armor Case for Galaxy A56"]
-    assert all("/collections/phones/products.json" in u or "/collections.json" in u for u in f.calls)
+    assert "https://shop.com.np/products.json?limit=250&page=1" in f.calls   # the whole store first
+    assert not any("page=2" in u for u in f.calls)       # a short page is the last one: no extra requests
+
+
+def test_shopify_stops_when_the_store_repeats_the_same_page():
+    """brother-mart: every collection was read to page 10 because pages kept coming back full."""
+    shop = fixture("shopify_products.json")
+    f = FakeFetcher({"products.json": shop})           # every page returns the same products
+    src = ShopifySource(name="shop", base_url="https://shop.com.np", max_pages=50)
+    src.PAGE = len(shop["products"])                    # so each page looks "full"
+    assert len(list(src.crawl(f))) == len(shop["products"])
+    assert sum("products.json" in u for u in f.calls) == 2   # page 1, then page 2 = same ids: stop
 
 
 def test_shopify_also_crawls_sale_and_festival_collections():
@@ -151,6 +162,8 @@ def test_cli_scrape_check_and_advise(tmp_path, monkeypatch, capsys):
     db = str(tmp_path / "d.db")
     cli.main(["--db", db, "--sources", str(reg), "check"])
     assert "daraz-np        OK" in capsys.readouterr().out
+    from devicescout.storage import Store
+    assert Store(db).stats()["raw_records"] == 3       # a check keeps the sample it pulled
     cli.main(["--db", db, "--sources", str(reg), "scrape", "--all"])
     assert "daraz-np: 6 records: 6 stored" in capsys.readouterr().out
     cli.main(["--db", db, "advise", "--category", "phone", "--budget", "50k", "--json"])
@@ -200,7 +213,8 @@ def test_js_built_category_page_is_rendered_in_a_browser():
     urls = list(src._browse(f, "https://shop.com.np"))
     assert urls == ["https://shop.com.np/samsung-galaxy-s25-ultra-12gb-256gb", "https://shop.com.np/redmi-note-14-pro-5g"]
     assert ("https://shop.com.np/mobile-phones", "dynamic") in f.calls
-    assert src.fetch_mode == "dynamic"       # its product pages will be rendered too
+    assert src.listing_mode == "dynamic"     # later listings go straight to the browser
+    assert src.fetch_mode == "static"        # product pages are still tried plain first (hukut: much faster)
 
 
 def test_product_links_read_from_embedded_page_data():
@@ -280,3 +294,121 @@ def test_site_crawl_stops_at_listing_budget():
     assert list(src.crawl(f, limit=100)) == []
     listing_fetches = [u for u in f.calls if not u.endswith((".xml", "robots.txt"))]
     assert len(set(listing_fetches)) <= 5
+
+
+def test_quick_sources_scrape_first_and_recent_checks_are_not_repeated():
+    from devicescout.jobs import _save_status, recently_checked, scrape_order
+    from devicescout.sources.detect import remember
+
+    remember("hukut", {"platform": "unknown"})
+    remember("brother-mart", {"platform": "shopify"})
+    entries = [{"name": "gsmarena", "type": "gsmarena", "role": "specs"}, {"name": "hukut"},
+               {"name": "gadgetbyte", "type": "jsonld", "role": "reference"}, {"name": "brother-mart"},
+               {"name": "never-checked-store"}]
+    assert [e["name"] for e in scrape_order(entries)] == [
+        "brother-mart", "hukut", "never-checked-store", "gadgetbyte", "gsmarena"]
+
+    assert not recently_checked(entries)
+    for e in entries:
+        _save_status(e["name"], checked_at="2020-01-01T00:00:00+00:00")
+    assert not recently_checked(entries)
+    from devicescout.jobs import _now
+    for e in entries:
+        _save_status(e["name"], checked_at=_now())
+    assert recently_checked(entries)
+
+
+def test_product_group_variants_become_separate_prices():
+    """hukut.com product pages: schema.org ProductGroup with one Product per storage option."""
+    from devicescout.sources import GenericSource, SiteConfig
+
+    ld = {"@context": "https://schema.org", "@type": "ProductGroup", "name": "Samsung Galaxy A57",
+          "brand": {"@type": "Brand", "name": "Samsung"},
+          "hasVariant": [
+              {"@type": "Product", "name": "Samsung Galaxy A57 8GB/128GB",
+               "offers": {"@type": "Offer", "price": 54999, "priceCurrency": "NPR",
+                          "availability": "https://schema.org/InStock"}},
+              {"@type": "Product", "name": "Samsung Galaxy A57 8GB/256GB",
+               "offers": {"@type": "Offer", "price": 59999, "priceCurrency": "NPR",
+                          "availability": "https://schema.org/OutOfStock"}}]}
+    html = (f'<html><head><script type="application/ld+json">{json.dumps(ld)}</script></head>'
+            f'<body><h1>Samsung Galaxy A57</h1><p>Rs. 4,500 off</p></body></html>')
+    p = GenericSource(SiteConfig(name="hukut", base_url="https://hukut.com")).parse(
+        FakePage(html, "https://hukut.com/samsung-galaxy-a57"))
+    assert p.name == "Samsung Galaxy A57" and p.brand == "Samsung" and p.category.value == "phone"
+    assert [(o.variant, o.price, o.in_stock) for o in p.offers] == [("8/128", 54999, True), ("8/256", 59999, False)]
+
+
+def test_js_shell_and_non_product_pages_are_recognised():
+    from devicescout.sources import GenericSource, SiteConfig
+    from devicescout.sources.base import _looks_like_js_shell
+
+    menu = "Laptops Desktops Gaming Monitors " * 18                       # ~570 characters of menu text
+    itti_like = FakePage(f"<html><body>{menu}<script>{'x' * 60000}</script></body></html>", "https://itti.com.np/")
+    assert _looks_like_js_shell(itti_like)
+    article = FakePage(f"<html><body>{'A real article paragraph. ' * 120}</body></html>", "https://x.com/a")
+    assert not _looks_like_js_shell(article)
+
+    src = GenericSource(SiteConfig(name="itti", base_url="https://itti.com.np"))
+    assert src._looks_like_product("https://itti.com.np/product/asus-zenbook-14-um3406ga-price-nepal")
+    assert not src._looks_like_product("https://itti.com.np/about-itti-pvt-ltd")
+    assert not src._looks_like_product("https://itti.com.np/itti-terms-and-conditions")
+
+
+def test_sitemap_of_category_pages_seeds_the_site_walk():
+    """itti.com.np: the sitemap lists category pages; products live under /product/..."""
+    from devicescout.sources import GenericSource, SiteConfig
+
+    sitemap = ('<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+               '<url><loc>https://itti.com.np/laptops-by-brands/asus-laptop-nepal</loc></url>'
+               '<url><loc>https://itti.com.np/laptops-by-brands/asus-laptop-nepal/zenbook-series</loc></url></urlset>')
+    ld = json.dumps({"@type": "Product", "name": "ASUS Zenbook 14 UM3406GA",
+                     "offers": {"price": "154999", "priceCurrency": "NPR"}})
+    product = f'<html><head><script type="application/ld+json">{ld}</script></head><body><h1>x</h1></body></html>'
+    routes = {
+        "itti.com.np/sitemap.xml": sitemap,
+        "itti.com.np/laptops-by-brands/asus-laptop-nepal/zenbook-series":
+            '<html><body><h1>Laptop price in Nepal 2026</h1>'
+            '<a href="/product/asus-zenbook-14-um3406ga-price-nepal">Zenbook</a>'
+            '<a href="/about-itti-pvt-ltd">About</a></body></html>',
+        "itti.com.np/laptops-by-brands/asus-laptop-nepal": '<html><body><h1>ASUS</h1>'
+            '<p>Processor: Ryzen 7</p><p>RAM: 16GB</p><p>Storage: 1TB SSD</p></body></html>',
+        "itti.com.np/product/asus-zenbook-14-um3406ga-price-nepal": product,
+    }
+
+    class Itti(FakeFetcher):
+        def _match(self, url):
+            self.calls.append(url)
+            for needle in sorted(routes, key=len, reverse=True):
+                if url.rstrip("/").endswith(needle):
+                    return routes[needle]
+            if url.rstrip("/") == "https://itti.com.np":
+                return "<html><body></body></html>"
+            raise RuntimeError(f"HTTP 404 for {url}")
+
+    f = Itti({})
+    got = list(GenericSource(SiteConfig(name="itti", base_url="https://itti.com.np")).crawl(f, limit=10))
+    assert [(p.name, p.offers[0].price, p.category.value) for p in got] == [
+        ("ASUS Zenbook 14 UM3406GA", 154999, "laptop")]
+    assert "https://itti.com.np/about-itti-pvt-ltd" not in f.calls
+
+
+def test_category_pages_with_long_slugs_are_not_products():
+    """itti.com.np: /laptops-by-brands/dell/dell-precision-pro-max-laptops became a 'product'
+    ('DellPrecision/ProMaxLaptopsPriceinNepal') with a price taken from one of its cards."""
+    from devicescout.sources import GenericSource, SiteConfig
+
+    src = GenericSource(SiteConfig(name="itti", base_url="https://itti.com.np"))
+    for url in ("https://itti.com.np/laptops-by-brands/dell/dell-precision-pro-max-laptops",
+                "https://itti.com.np/gadgets/mobiles/blackview-smartphones-price-nepal"):
+        assert not src._looks_like_product(url), url
+    for url in ("https://itti.com.np/product/acer-nitro-vg271u-gaming-monitor-price-nepal",
+                "https://shop.com.np/mi-43-inch-a-series-2025", "https://hukut.com/samsung-galaxy-a57"):
+        assert src._looks_like_product(url), url
+
+    cards = "".join(f'<a href="/product/dell-pro-{i}-laptop-16gb">Dell {i}</a><p>Rs. {90000 + i},000</p>'
+                    for i in range(8))
+    listing = FakePage(f"<html><body><h1>Dell Laptops Price in Nepal</h1>{cards}</body></html>",
+                       "https://itti.com.np/some-dell-laptop-range-2026")
+    assert src._is_listing(listing)
+    assert src._product(FakeFetcher({}), listing.url, listing) is None

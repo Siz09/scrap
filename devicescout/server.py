@@ -32,6 +32,7 @@ from .sample import build_sample
 from .sources import load_entries
 from .sources.detect import cached_platform
 from .specmeta import meta as spec_meta
+from .currency import apply_stored, rates_info
 from .storage import Store, open_store
 
 log = logging.getLogger(__name__)
@@ -54,13 +55,14 @@ class NeedsIn(BaseModel):
     must: list[MustIn] = Field(default_factory=list)
     official_only: bool = False
     in_stock_only: bool = False
-    top: int = Field(default=5, ge=1, le=20)
+    nepal_only: bool = False       # only devices sold in Nepal (else converted prices abroad count too)
+    top: int = Field(default=5, ge=1, le=500)
 
 
 class AskIn(BaseModel):
     q: str = Field(min_length=1, max_length=300)
     category: Category = Category.PHONE      # used when the text names no device type
-    top: int = Field(default=5, ge=1, le=20)
+    top: int = Field(default=5, ge=1, le=500)
 
 
 class SourceIn(BaseModel):
@@ -80,13 +82,31 @@ class JobIn(BaseModel):
     limit: int | None = Field(default=None, ge=1)   # None: everything each site has
 
 
+def _health(st: dict) -> dict:
+    """A source's status from whichever is newer: its last check, or its last full update
+    (the scraper no longer checks everything first, so an update is usually the evidence)."""
+    scraped, checked = st.get("last_scraped_at"), st.get("checked_at")
+    if scraped and st.get("check") != "RUNNING" and (not checked or scraped > checked):
+        n = st.get("last_scrape_count") or 0
+        return {**st, "check": "OK" if n else "FAIL", "checked_at": scraped,
+                "check_detail": f"last update saved {n} items" if n else
+                                "last update saved nothing: press Check for details"}
+    return st
+
+
 def summary(p: Product) -> dict[str, Any]:
     best = p.best_offer
     return {
         "key": p.key, "name": p.name, "brand": p.brand, "category": p.category.value,
         "image": p.image, "rating": p.rating, "review_count": p.review_count,
         "best_price": p.best_price, "reference_price": p.reference_price_npr,
+        "available_in_nepal": p.available_in_nepal,
+        # Not sold in Nepal: its cheapest price abroad, converted to NPR at the current rate.
+        "converted_price": conv.price_npr if (conv := (None if p.available_in_nepal else p.converted_offer)) else None,
+        "converted_from": {"price": conv.price, "currency": conv.currency, "seller": conv.seller} if conv else None,
         "best_seller": best.seller if best else None, "best_official": best.official if best else None,
+        # The cheapest price is a price a Nepali tech site lists (e.g. Gadgetbyte), not a shop's.
+        "best_listed_only": best.region == "np-ref" if best else None,
         "offer_count": len(p.local_offers()), "specs": p.specs,
         "sources": sorted({o.source for o in p.offers} | ({p.source} if p.source else set())),
     }
@@ -113,7 +133,14 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
     worker_thread = LocalWorker(db, sources) if jobs_mode == "local" else None
 
     def store() -> Store:
-        return open_store(db)
+        s = open_store(db)
+        try:   # the exchange rates the scraper fetched on its last run
+            stored = s.get_kv("fx_rates")
+            if stored:
+                apply_stored(json.loads(stored))
+        except Exception:
+            pass
+        return s
 
     @app.get("/api/health", include_in_schema=False)
     def health():
@@ -132,7 +159,7 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
         finally:
             s.close()
         return {**spec_meta(), "stats": stats, "version": __version__, "read_only": read_only, "sample": sample,
-                "jobs_mode": jobs_mode, "admin_required": admin_required}
+                "jobs_mode": jobs_mode, "admin_required": admin_required, "rates": rates_info()}
 
     def run_advice(needs: Needs) -> dict:
         s = store()
@@ -166,7 +193,7 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
             category=body.category, budget_min=body.budget_min, budget_max=body.budget_max,
             uses=body.uses or {"balanced": 1.0}, os=body.os, brands=body.brands, exclude_brands=body.exclude_brands,
             must={m.key: (m.op, m.value) for m in body.must}, official_only=body.official_only,
-            in_stock_only=body.in_stock_only, top=body.top,
+            in_stock_only=body.in_stock_only, nepal_only=body.nepal_only, top=body.top,
         )
         return run_advice(needs)
 
@@ -183,15 +210,22 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
                 items = sorted((p for p in items if p.key in rank), key=lambda p: rank[p.key])
         finally:
             s.close()
-        if priced_only or min_price is not None or max_price is not None:
-            items = [p for p in items if p.best_price is not None
-                     and (min_price is None or p.best_price >= min_price)
-                     and (max_price is None or p.best_price <= max_price)]
+        def price(p: Product) -> float | None:
+            """Nepali price, else the price abroad converted to NPR (not sold here yet)."""
+            if p.best_price is not None:
+                return p.best_price
+            conv = p.converted_offer
+            return conv.price_npr if conv else None
+
+        if min_price is not None or max_price is not None:
+            items = [p for p in items if (v := price(p)) is not None
+                     and (min_price is None or v >= min_price) and (max_price is None or v <= max_price)]
+        # priced_only (sorting by price): devices with no price anywhere go last, not away.
         keys = {
             "relevance": lambda p: 0,   # keep search order
             "name": lambda p: p.name.lower(),
-            "price": lambda p: (p.best_price is None, p.best_price or 0),
-            "-price": lambda p: (p.best_price is None, -(p.best_price or 0)),
+            "price": lambda p: (price(p) is None, price(p) or 0),
+            "-price": lambda p: (price(p) is None, -(price(p) or 0)),
             "rating": lambda p: -(p.rating or 0),
         }
         items.sort(key=keys[sort])
@@ -216,11 +250,32 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
             ({"seller": o.seller or o.source, "source": o.source, "url": o.url, "price": o.price,
               "currency": o.currency, "price_npr": o.price_npr, "variant": o.variant, "official": o.official,
               "in_stock": o.in_stock, "region": o.region, "suspicious": o.suspicious,
-              "original_price": o.original_price, "scraped_at": o.scraped_at} for o in p.offers),
+              "original_price": o.original_price, "scraped_at": o.scraped_at,
+              "converted": (o.currency or "NPR").upper() not in ("NPR", "RS", "NRS")} for o in p.offers),
             key=lambda o: (o["region"] == "intl", o["suspicious"], o["price_npr"] or 1e12),
         )
         return {**summary(p), "offers": offers, "history": history, "spec_sources": spec_sources,
                 "gtin": p.gtin, "updated_at": p.updated_at}
+
+    @app.get("/api/images/{key:path}", include_in_schema=False)
+    def get_image(key: str):
+        """The device's photo (downloaded once, then served from the data folder), or a drawn
+        placeholder when no site has one: every device shows an image."""
+        from fastapi.responses import Response
+
+        from .images import image_file, placeholder_svg
+        s = store()
+        try:
+            p = s.product(key)
+            if not p:
+                raise HTTPException(404, "not found")
+            path = image_file(p, remember=lambda url: s.set_image(key, url))
+        finally:
+            s.close()
+        if path:
+            return FileResponse(path, headers={"Cache-Control": "public, max-age=604800"})
+        return Response(placeholder_svg(p), media_type="image/svg+xml",
+                        headers={"Cache-Control": "public, max-age=3600"})
 
     @app.get("/api/deals")
     def get_deals(category: Category | None = None, verified_only: bool = True,
@@ -279,7 +334,7 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
                 "verified": e.get("verified", False), "notes": e.get("notes"),
                 "url": e.get("base_url") or (f"https://{e['domain']}" if e.get("domain") else None),
                 "raw_pages": kept.get("pages", 0), "raw_records": kept.get("records", 0),
-                **status.get(e["name"], {}),
+                **_health(status.get(e["name"], {})),
             })
         return {"sources": out, "file": str(sources), "scrapers": scrapers_info()}
 
@@ -376,11 +431,11 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
         return job
 
     @app.post("/api/jobs/cancel")
-    def cancel_job(x_admin_key: str | None = Header(default=None)):
+    def cancel_job(x_admin_key: str | None = Header(default=None), job_id: str | None = None):
         _authorize(x_admin_key)
         s = store()
         try:
-            return {"ok": True, "cancelled": s.request_cancel()}
+            return {"ok": True, "cancelled": s.request_cancel(job_id)}
         finally:
             s.close()
 
