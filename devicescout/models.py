@@ -51,6 +51,7 @@ SPEC_KEYS = {
     "has_5g": bool,
     "has_nfc": bool,
     "has_gps": bool,
+    "os_upgrades": int,        # promised major OS upgrades ("up to 7 major Android upgrades")
 }
 
 

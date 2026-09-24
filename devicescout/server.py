@@ -19,7 +19,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import __version__
-from .advisor import Needs, advise
+from .advisor import Needs, advise, needs_from_query
+from .query import parse_query
 from .jobs import JobManager, load_status, run_check, run_scrape
 from .models import Category, Product
 from .paths import sample_db, web_dist
@@ -49,6 +50,12 @@ class NeedsIn(BaseModel):
     must: list[MustIn] = Field(default_factory=list)
     official_only: bool = False
     in_stock_only: bool = False
+    top: int = Field(default=5, ge=1, le=20)
+
+
+class AskIn(BaseModel):
+    q: str = Field(min_length=1, max_length=300)
+    category: Category = Category.PHONE      # used when the text names no device type
     top: int = Field(default=5, ge=1, le=20)
 
 
@@ -87,6 +94,32 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
             s.close()
         return {**spec_meta(), "stats": stats, "version": __version__, "read_only": read_only, "sample": sample}
 
+    def run_advice(needs: Needs) -> dict:
+        s = store()
+        try:
+            advice = advise(s.products(needs.category), needs)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        finally:
+            s.close()
+
+        def out(pick):
+            return {**pick.to_dict(), **summary(pick.ranked.product), "price_npr": pick.price} if pick else None
+
+        return {"picks": [out(p) for p in advice.picks], "value_pick": out(advice.value_pick),
+                "stretch_pick": out(advice.stretch_pick), "considered": advice.considered,
+                "excluded": advice.excluded}
+
+    @app.post("/api/parse")
+    def post_parse(body: AskIn):
+        """Plain words -> structured needs, for the UI to show and let the buyer edit."""
+        return parse_query(body.q).to_dict()
+
+    @app.post("/api/ask")
+    def post_ask(body: AskIn):
+        parsed = parse_query(body.q)
+        return {"parsed": parsed.to_dict(), "advice": run_advice(needs_from_query(parsed, body.category, body.top))}
+
     @app.post("/api/advise")
     def post_advise(body: NeedsIn):
         needs = Needs(
@@ -95,19 +128,7 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
             must={m.key: (m.op, m.value) for m in body.must}, official_only=body.official_only,
             in_stock_only=body.in_stock_only, top=body.top,
         )
-        s = store()
-        try:
-            advice = advise(s.products(needs.category), needs)
-        except ValueError as e:
-            raise HTTPException(400, str(e))
-        finally:
-            s.close()
-        def out(pick):
-            return {**pick.to_dict(), **summary(pick.ranked.product), "price_npr": pick.price} if pick else None
-
-        return {"picks": [out(p) for p in advice.picks], "value_pick": out(advice.value_pick),
-                "stretch_pick": out(advice.stretch_pick), "considered": advice.considered,
-                "excluded": advice.excluded}
+        return run_advice(needs)
 
     @app.get("/api/products")
     def list_products(category: Category | None = None, q: str = "", min_price: float | None = None,

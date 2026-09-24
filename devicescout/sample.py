@@ -79,12 +79,20 @@ DEVICES: list[tuple] = [
 ]
 
 
+# Promised major OS upgrades (fictional), so "lasts for years" has something to rank on.
+OS_UPGRADES = {"Nimbus Z9 Ultra": 7, "Everest P8 Pro": 5, "Koshi K5 Camera": 4, "Lumo Power 7": 3,
+               "Terai Neo 3": 2, "Koshi K3 Lite": 2, "Nimbus Mini S": 7, "Orchid One": 6,
+               "Koshi Tab 11": 3, "Orchid Pad Air": 6}
+
+
 def build_sample(path: Path) -> Path:
     if path.exists():
         path.unlink()
     store = Store(path)
     now = datetime.now(timezone.utc)
     for i, (cat, name, brand, price, specs, rating, reviews) in enumerate(DEVICES):
+        if name in OS_UPGRADES:
+            specs = {**specs, "os_upgrades": OS_UPGRADES[name]}
         offers = []
         for j, (seller, official) in enumerate(STORES):
             if (i + j) % 3 == 2 and j:  # not every store stocks everything

@@ -4,6 +4,7 @@
   devicescout check                         # detect platforms + sample each source (run this first)
   devicescout scrape --all                  # scrape every enabled source
   devicescout scrape daraz-np gsmarena --limit 100
+  devicescout ask "photography phone under 1.2 lakh"
   devicescout advise -i                     # answer a few questions, get a shortlist
   devicescout advise --category phone --budget 30k-60k --use photography:2,battery --os android --need 5g
   devicescout parse-file page.html --url https://... --source gsmarena
@@ -219,6 +220,20 @@ def cmd_serve(args) -> None:
           read_only=args.read_only, sample=args.sample)
 
 
+def cmd_ask(args) -> None:
+    from .advisor import needs_from_query
+    from .query import parse_query
+
+    parsed = parse_query(" ".join(args.text))
+    print("Understood: " + (" | ".join(parsed.understood) or "nothing specific (showing all-rounders)"))
+    needs = needs_from_query(parsed, top=args.top)
+    advice = advise(Store(args.db).products(needs.category), needs)
+    if args.json:
+        print(json.dumps({"parsed": parsed.to_dict(), "advice": advice.to_dict()}, indent=2, default=str))
+    else:
+        _print_advice(advice)
+
+
 def cmd_export(args) -> None:
     category = Category(args.category) if args.category else None
     rows = [p.to_dict() for p in Store(args.db).products(category)]
@@ -267,6 +282,12 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--source", default="generic")
     s.add_argument("--save", action="store_true")
     s.set_defaults(func=cmd_parse_file)
+
+    s = sub.add_parser("ask", help='plain words: devicescout ask "photography phone under 1.2 lakh"')
+    s.add_argument("text", nargs="+")
+    s.add_argument("--top", type=int, default=5)
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_ask)
 
     s = sub.add_parser("advise", help="shortlist devices for a buyer's needs and budget")
     s.add_argument("-i", "--interactive", action="store_true", help="ask questions instead of flags")

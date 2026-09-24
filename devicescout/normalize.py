@@ -115,6 +115,14 @@ def parse_os(text: str) -> str | None:
     return None
 
 
+def parse_os_upgrades(text: str) -> int | None:
+    """'Android 14, up to 7 major Android upgrades' -> 7; '5 years of OS updates' -> 5."""
+    m = re.search(r"up to (\d{1,2}) major", text, re.I) or \
+        re.search(r"(\d{1,2})\s*(?:years?|yrs?)\s*(?:of\s*)?(?:os|android|software)\s*(?:updates|upgrades)", text, re.I) or \
+        re.search(r"(\d{1,2})\s*(?:major\s*)?(?:os|android)\s*(?:updates|upgrades)", text, re.I)
+    return int(m.group(1)) if m else None
+
+
 def parse_resolution(text: str) -> int | None:
     m = re.search(r"(\d{3,4})\s*[x×]\s*(\d{3,4})", text)
     return int(m.group(1)) * int(m.group(2)) if m else None
@@ -188,6 +196,8 @@ def normalize_specs(raw: dict[str, str], category: Category) -> dict[str, Any]:
         elif _match(label, "os") and "os" not in specs:
             if (os_name := parse_os(v)):
                 specs["os"] = os_name
+            if (n := parse_os_upgrades(v)):
+                specs["os_upgrades"] = n
         elif _match(label, "chipset") and "chipset" not in specs:
             specs["chipset"] = v.split("\n")[0][:120]
         elif _match(label, "gpu") and "gpu" not in specs:

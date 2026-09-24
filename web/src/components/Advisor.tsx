@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, type Advice, type Must, type MustInfo } from "../api";
+import { api, type Advice, type Must, type MustInfo, type Parsed } from "../api";
 import { useApp } from "../context";
 import { npr, nprShort, osName, parseAmount } from "../format";
 import PickCard from "./PickCard";
@@ -27,6 +27,10 @@ export default function Advisor() {
   const [os, setOs] = useState<string[]>([]);
   const [musts, setMusts] = useState<MustState>({});
   const [officialOnly, setOfficialOnly] = useState(false);
+  const [brands, setBrands] = useState<string[]>([]);
+  const [excludeBrands, setExcludeBrands] = useState<string[]>([]);
+  const [query, setQuery] = useState("");
+  const [understood, setUnderstood] = useState<string[] | null>(null);
   const [inStock, setInStock] = useState(false);
 
   const [advice, setAdvice] = useState<Advice | null>(null);
@@ -47,6 +51,29 @@ export default function Advisor() {
     setMaxText(presets.length ? nprShort(presets[Math.floor(presets.length / 2)]).replace("Rs ", "") : "");
   }
 
+  // Plain words -> form. The form stays editable, so a misunderstanding is visible and fixable.
+  async function ask(e: React.FormEvent) {
+    e.preventDefault();
+    if (!query.trim()) return;
+    let p: Parsed;
+    try {
+      p = await api.parse(query);
+    } catch (err) {
+      setError((err as Error).message);
+      return;
+    }
+    const target = categories.find((c) => c.id === p.category) ?? cat;
+    setCategory(target.id);
+    setMinText(p.budget_min ? String(p.budget_min) : "");
+    setMaxText(p.budget_max ? String(p.budget_max) : "");
+    setUses(p.uses.filter((u) => target.uses.some((x) => x.id === u)));
+    setOs(p.os.filter((o) => target.os.includes(o)));
+    setMusts(Object.fromEntries(p.must.map((m) => [m.key, m.value])));
+    setBrands(p.brands);
+    setExcludeBrands(p.exclude_brands);
+    setUnderstood(p.understood);
+  }
+
   function toggleUse(id: string) {
     setUses((u) => (u.includes(id) ? u.filter((x) => x !== id) : [...u, id]));
   }
@@ -62,9 +89,10 @@ export default function Advisor() {
     return {
       category: cat.id, budget_min: budgetMin, budget_max: budgetMax,
       uses: uses.length ? weighted : { balanced: 1 }, os, must,
+      brands, exclude_brands: excludeBrands,
       official_only: officialOnly, in_stock_only: inStock, top: 5,
     };
-  }, [cat, budgetMin, budgetMax, uses, os, musts, officialOnly, inStock]);
+  }, [cat, budgetMin, budgetMax, uses, os, musts, brands, excludeBrands, officialOnly, inStock]);
 
   useEffect(() => {
     if (budgetInvalid) return;
@@ -91,6 +119,27 @@ export default function Advisor() {
     <div className="advisor">
       <section className="panel form" aria-label="Your needs">
         <h1>What are you looking for?</h1>
+
+        <form className="ask" onSubmit={ask} role="search">
+          <label htmlFor="ask-input" className="sr-only">Describe what you want</label>
+          <input id="ask-input" type="search" value={query} onChange={(e) => setQuery(e.target.value)}
+                 placeholder='e.g. "photography phone under 1.2 lakh"' />
+          <button type="submit" className="btn primary">Ask</button>
+        </form>
+        {understood ? (
+          <div className="understood" aria-live="polite">
+            <span className="muted small">Understood:</span>
+            {understood.length ? understood.map((u) => <span key={u} className="tag">{u}</span>)
+              : <span className="muted small">nothing specific. Try naming a device, a use and a budget.</span>}
+            {(brands.length > 0 || excludeBrands.length > 0) && (
+              <button type="button" className="link small" onClick={() => { setBrands([]); setExcludeBrands([]); }}>
+                clear brand filter
+              </button>
+            )}
+          </div>
+        ) : (
+          <p className="hint">Or choose below. Try: "gaming phone below 50k with 5g", "long lasting laptop for coding under 1.5 lakh".</p>
+        )}
 
         <fieldset>
           <legend>Device</legend>

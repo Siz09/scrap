@@ -109,9 +109,23 @@ export interface NeedsRequest {
   uses: Record<string, number>;
   os: string[];
   must: Must[];
+  brands?: string[];
+  exclude_brands?: string[];
   official_only: boolean;
   in_stock_only: boolean;
   top?: number;
+}
+
+export interface Parsed {
+  category: string | null;
+  budget_min: number | null;
+  budget_max: number | null;
+  uses: string[];
+  os: string[];
+  brands: string[];
+  exclude_brands: string[];
+  must: Must[];
+  understood: string[];
 }
 
 export interface Offer {
@@ -190,6 +204,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   meta: () => request<Meta>("/api/meta"),
+  parse: (q: string) => request<Parsed>("/api/parse", { method: "POST", body: JSON.stringify({ q }) }),
   advise: (needs: NeedsRequest) => request<Advice>("/api/advise", { method: "POST", body: JSON.stringify(needs) }),
   products: (params: Record<string, string | number | undefined>) => {
     const q = new URLSearchParams();

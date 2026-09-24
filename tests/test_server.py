@@ -103,3 +103,10 @@ def test_must_options_make_sense_per_category(client):
     for c in cats.values():   # the UI keys controls by spec key: no duplicates within a category
         keys = [m["key"] for m in c["musts"]]
         assert len(keys) == len(set(keys))
+
+
+def test_ask_endpoint(client):
+    r = client.post("/api/ask", json={"q": "long lasting android phone under 1 lakh"}).json()
+    assert r["parsed"]["uses"] == ["longevity"] and r["parsed"]["budget_max"] == 100000
+    assert r["advice"]["picks"][0]["name"] == "Nimbus Mini S"      # 7 promised OS upgrades
+    assert client.post("/api/parse", json={"q": "gaming laptop under 1.2 lakh"}).json()["category"] == "laptop"
