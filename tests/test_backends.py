@@ -57,7 +57,15 @@ def test_json_requests_reject_html_and_read_browser_rendered_json():
     assert html.calls == 1 and browser.calls == 1
 
 
-def test_probes_do_not_fall_through():
+def test_probes_skip_browsers_but_try_http_scrapers():
+    a = Scripted("a", [(403, b"denied")])
+    b = Scripted("b", [(200, b'{"ok": 1}')])
+    browser = Scripted("browser", [(200, b'<pre>{"ok": 2}</pre>')], browser=True)
+    assert fetcher(a, browser, b).get_json("https://x.com.np/products.json", fallback="http") == {"ok": 1}
+    assert browser.calls == 0
+
+
+def test_first_scraper_only():
     a = Scripted("a", [(403, b"denied")])
     b = Scripted("b", [(200, b'{"ok": 1}')])
     with pytest.raises(RuntimeError):

@@ -27,14 +27,14 @@ def detect(fetcher: Fetcher, base_url: str) -> dict:
         return {**report, "platform": "daraz", "evidence": "daraz domain"}
 
     try:
-        data = fetcher.get_json(f"{base}/products.json?limit=1", fallback=False)
+        data = fetcher.get_json(f"{base}/products.json?limit=1", fallback="http")
         if isinstance(data, dict) and "products" in data:
             return {**report, "platform": "shopify", "evidence": "/products.json returned products"}
     except Exception as e:
         report["shopify_error"] = str(e)[:120]
 
     try:
-        data = fetcher.get_json(f"{base}/wp-json/wc/store/v1/products?per_page=1", fallback=False)
+        data = fetcher.get_json(f"{base}/wp-json/wc/store/v1/products?per_page=1", fallback="http")
         if isinstance(data, list):
             return {**report, "platform": "woocommerce", "evidence": "Store API returned a product list"}
     except Exception as e:

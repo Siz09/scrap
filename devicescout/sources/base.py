@@ -111,17 +111,21 @@ class Fetcher:
         self.stats.setdefault(backend, {"ok": 0, "blocked": 0, "error": 0})[outcome] += 1
 
     def get(self, url: str, headers: dict[str, str] | None = None, mode: str | None = None,
-            want_json: bool = False, fallback: bool = True):
+            want_json: bool = False, fallback: bool | str = True):
         """Return a Scrapling Selector-like page (.css(), .urljoin(), .json(), .status, .body).
 
-        fallback=False tries only the first scraper: for cheap probes (platform detection)
-        where a refusal is an answer, not something to fight through."""
+        fallback: True = whole chain; "http" = HTTP scrapers only (cheap probes such as platform
+        detection, where launching a browser isn't worth it); False = first scraper only."""
         if not self.allowed(url):
             raise PermissionError(f"robots.txt disallows {url}")
         host = urlparse(url).netloc
         reasons = []
         chain = self._chain(host, mode or self.mode, want_json)
-        for backend in chain if fallback else chain[:1]:
+        if fallback == "http":
+            chain = [b for b in chain if not b.browser]
+        elif not fallback:
+            chain = chain[:1]
+        for backend in chain:
             self._throttle(url)
             try:
                 page = backend.fetch(url, headers or {})
@@ -152,7 +156,7 @@ class Fetcher:
             return page
         raise RuntimeError(f"all scrapers failed for {url}: " + "; ".join(reasons or ["no backend available"]))
 
-    def get_json(self, url: str, headers: dict[str, str] | None = None, fallback: bool = True):
+    def get_json(self, url: str, headers: dict[str, str] | None = None, fallback: bool | str = True):
         page = self.get(url, headers={"Accept": "application/json, text/plain, */*", **(headers or {})},
                         want_json=True, fallback=fallback)
         return response_json(page)

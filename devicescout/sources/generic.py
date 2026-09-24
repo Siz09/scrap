@@ -95,6 +95,98 @@ def extract_jsonld_review(page) -> dict | None:
     return None
 
 
+_NAME_KEYS = ("name", "title", "productName", "product_name")
+_PRICE_KEYS = ("salePrice", "sellingPrice", "specialPrice", "discountedPrice", "discountPrice", "finalPrice",
+               "final_price", "selling_price", "sale_price", "offerPrice", "price")
+_ORIGINAL_KEYS = ("mrp", "regularPrice", "regular_price", "originalPrice", "compareAtPrice", "compare_at_price",
+                  "listPrice", "marketPrice")
+
+
+def _embedded_json(page) -> list:
+    """JSON that JavaScript-built stores embed in the page: Next.js __NEXT_DATA__, Nuxt, generic state."""
+    out = []
+    for script in page.css("script#__NEXT_DATA__::text, script[type='application/json']::text").getall():
+        try:
+            out.append(json.loads(script))
+        except (ValueError, TypeError):
+            continue
+    for script in page.css("script:not([src])::text").getall():
+        m = re.search(r"(?:__NUXT__|__INITIAL_STATE__|__PRELOADED_STATE__)\s*=\s*(\{.*\})\s*;?\s*$", script, re.S)
+        if m:
+            try:
+                out.append(json.loads(m.group(1)))
+            except ValueError:
+                pass
+    return out
+
+
+def extract_embedded_product(page, hint_name: str = "") -> dict | None:
+    """The best product-like object in embedded JSON: has a name and a price.
+    Prefers the one whose name matches the page title/h1 (not a 'related products' entry)."""
+    best, best_score = None, -1
+    hint = set(re.findall(r"\w+", hint_name.lower()))
+
+    def walk(node, depth=0):
+        nonlocal best, best_score
+        if depth > 12:
+            return
+        if isinstance(node, dict):
+            name = next((node[k] for k in _NAME_KEYS if isinstance(node.get(k), str) and len(node[k]) > 3), None)
+            price = next((parse_price(node[k]) for k in _PRICE_KEYS if node.get(k) not in (None, "", 0)), None)
+            if name and price:
+                words = set(re.findall(r"\w+", name.lower()))
+                score = len(words & hint) + (5 if any(k in node for k in ("specifications", "attributes", "specs")) else 0)
+                if score > best_score:
+                    best, best_score = node, score
+            for v in node.values():
+                walk(v, depth + 1)
+        elif isinstance(node, list):
+            for v in node[:200]:
+                walk(v, depth + 1)
+
+    for blob in _embedded_json(page):
+        walk(blob)
+    if not best:
+        return None
+    specs: dict[str, str] = {}
+    for key in ("specifications", "attributes", "specs", "features"):
+        items = best.get(key)
+        if isinstance(items, dict):
+            specs.update({str(k): str(v) for k, v in items.items() if isinstance(v, (str, int, float))})
+        elif isinstance(items, list):
+            for it in items:
+                if isinstance(it, dict):
+                    label = it.get("name") or it.get("key") or it.get("label") or it.get("title")
+                    value = it.get("value") or it.get("values") or it.get("option")
+                    if isinstance(value, list):
+                        value = ", ".join(str(v) for v in value)
+                    if label and value:
+                        specs[str(label)] = str(value)
+    brand = best.get("brand")
+    if isinstance(brand, dict):
+        brand = brand.get("name") or brand.get("title")
+    return {
+        "name": next(best[k] for k in _NAME_KEYS if isinstance(best.get(k), str) and len(best[k]) > 3),
+        "price": next((parse_price(best[k]) for k in _PRICE_KEYS if best.get(k) not in (None, "", 0)), None),
+        "original": next((parse_price(best[k]) for k in _ORIGINAL_KEYS if best.get(k) not in (None, "", 0)), None),
+        "brand": brand if isinstance(brand, str) else None,
+        "specs": specs,
+    }
+
+
+def extract_meta_price(page) -> tuple[float | None, str | None]:
+    """Price from Open Graph / Facebook product tags or schema.org microdata."""
+    for sel in ("meta[property='product:price:amount']::attr(content)",
+                "meta[property='og:price:amount']::attr(content)",
+                "[itemprop='price']::attr(content)", "[itemprop='price']::text"):
+        v = page.css(sel).get()
+        if v and parse_price(v):
+            cur = (page.css("meta[property='product:price:currency']::attr(content)").get()
+                   or page.css("[itemprop='priceCurrency']::attr(content)").get())
+            return parse_price(v), cur
+    return None, None
+
+
 def extract_spec_rows(page, cfg: SiteConfig) -> dict[str, str]:
     raw: dict[str, str] = {}
     rows = page.css(cfg.spec_row_css) if cfg.spec_row_css else page.css("table tr")
@@ -265,9 +357,12 @@ class GenericSource(Source):
         review = extract_jsonld_review(page)
         if not ld and review and isinstance(review.get("itemReviewed"), dict):
             ld = review["itemReviewed"]
+        h1 = text_of(page.css("h1").first)
+        og_title = page.css("meta[property='og:title']::attr(content)").get() or ""
+        embedded = None if ld.get("offers") else extract_embedded_product(page, h1 or og_title)
         name = ld.get("name") or (
             text_of(page.css(self.cfg.name_css).first) if self.cfg.name_css else ""
-        ) or text_of(page.css("h1").first)
+        ) or h1 or (embedded or {}).get("name") or og_title
         if not name:
             return None
 
@@ -286,10 +381,22 @@ class GenericSource(Source):
         currency = offers_ld.get("priceCurrency") or self.cfg.currency
         if price is None and self.cfg.price_css:
             price = parse_price(text_of(page.css(self.cfg.price_css).first))
+        if price is None:
+            price, meta_currency = extract_meta_price(page)
+            currency = currency or meta_currency
+        embedded_original = None
+        if price is None and embedded:
+            price, embedded_original = embedded["price"], embedded["original"]
+            brand_hint = embedded.get("brand")
+        else:
+            brand_hint = None
         body_text = page.css("body").first.get_all_text(separator="\n") if page.css("body") else ""
-        if price is None and self.cfg.price_from_text:
+        # Stores in Nepal: as a last resort, the "Rs. 54,999" shown next to "price" on the page.
+        if price is None and (self.cfg.price_from_text or self.cfg.region == "np"):
             price = price_from_text(body_text)
             currency = currency or "NPR"
+        if price is not None and not currency and self.cfg.region.startswith("np"):
+            currency = "NPR"
         valid_until = offers_ld.get("priceValidUntil")
         # A sale price with the regular price published alongside (AggregateOffer or priceSpecification).
         original = None
@@ -307,6 +414,11 @@ class GenericSource(Source):
             review_count = int(agg.get("reviewCount") or agg.get("ratingCount") or 0) or None
 
         raw = extract_spec_rows(page, self.cfg)
+        if embedded:
+            for k, v in embedded["specs"].items():
+                raw.setdefault(k, v)
+        if not brand and brand_hint:
+            brand = brand_hint
         for prop in ld.get("additionalProperty") or []:
             if isinstance(prop, dict) and prop.get("name") and prop.get("value") is not None:
                 raw.setdefault(str(prop["name"]), str(prop["value"]))
@@ -336,7 +448,8 @@ class GenericSource(Source):
                 scraped_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 region=self.cfg.region, seller=self.name, official=self.cfg.official,
                 variant=parse_variant(name), valid_until=str(valid_until)[:10] if valid_until else None,
-                original_price=original if original and price and original > price else None,
+                original_price=(original or embedded_original)
+                if (original or embedded_original) and price and (original or embedded_original) > price else None,
             ))
         if not ld and not offers and not specs and len(raw) < 3:
             return None   # a category, article or landing page, not a product

@@ -16,15 +16,18 @@ The website and the scraper run as two containers sharing one database:
 
 ```bash
 git clone https://github.com/Siz09/scrap.git && cd scrap
-cp .env.example .env          # Windows PowerShell: Copy-Item .env.example .env
-# edit .env and set DEVICESCOUT_ADMIN_KEY (your key for the Data sources page)
 docker compose up -d --build
 ```
 
-Settings live in `.env`, which Docker Compose reads automatically in any shell (PowerShell, cmd, bash). The file is git-ignored, so your key is never committed.
+Optional settings go in a `.env` file next to `docker-compose.yml` (see `.env.example`). Docker Compose reads it automatically in any shell (PowerShell, cmd, bash), and git ignores it.
 
 This starts:
-- **web** (`ghcr.io/siz09/scrap`): the website at http://localhost:8765. It's read-only for visitors. To run **Check sources** or **Update prices** from the *Data sources* page, enter your `DEVICESCOUT_ADMIN_KEY` there. The site queues the job and the scraper container runs it, with a live progress bar. Without the key set, the page is purely informational.
+- **web** (`ghcr.io/siz09/scrap`): the website at http://localhost:8765. On *Data sources* you can:
+  - **Check** or **Update** all sources or one at a time. The scraper container runs the job and a live progress bar shows it.
+  - **Add a store** by pasting its link (a category page like `…/mobile-phones` works best).
+  - Disable or remove sources.
+
+  No key is needed on your own machine. Before putting the site on the internet, set `DEVICESCOUT_ADMIN_KEY` in `.env`. Visitors can then still browse, but only someone with the key can start scraping or change sources.
 - **scraper** (`ghcr.io/siz09/scrap-scraper`): checks every source once, then scrapes all enabled sources every 6 hours (`SCRAPE_EVERY=12h` to change it). It also runs jobs queued from the website within about 5 seconds. Every scraper in the fallback chain is installed and ready:
   - fast HTTP and plain HTTP,
   - Chromium (`scrapling-dynamic`),

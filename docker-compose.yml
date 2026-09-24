@@ -15,8 +15,8 @@ x-app: &app
   environment: &env
     TZ: ${TZ:-Asia/Kathmandu}
     DEVICESCOUT_RATES: ${DEVICESCOUT_RATES:-}
-    # Lets you run checks/updates from the Data sources page (you type this key there).
-    # Without it the site is fully read-only. Use a long random string.
+    # Optional. Empty (fine on your own machine): anyone who opens the site can run checks/updates.
+    # Set a long random value before putting the site on the internet; you type it on Data sources.
     DEVICESCOUT_ADMIN_KEY: ${DEVICESCOUT_ADMIN_KEY:-}
 
 services:

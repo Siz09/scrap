@@ -220,7 +220,7 @@ def cmd_advise(args) -> None:
 def cmd_serve(args) -> None:
     from .server import serve
     serve(host=args.host, port=args.port, db=args.db, sources=args.sources, open_browser=not args.no_browser,
-          read_only=args.read_only, sample=args.sample)
+          read_only=args.read_only, sample=args.sample, worker=args.worker)
 
 
 def cmd_ask(args) -> None:
@@ -454,8 +454,10 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=8765)
     s.add_argument("--no-browser", action="store_true")
-    s.add_argument("--read-only", action="store_true",
-                   help="disable scraping from the UI (use when hosting for the public)")
+    s.add_argument("--read-only", action="store_true", help="no scraping from the web page at all")
+    s.add_argument("--worker", choices=["local", "external"], default="local",
+                   help="who runs jobs started from the page: this process, or a separate "
+                        "`devicescout schedule` process sharing the database (Docker)")
     s.add_argument("--sample", action="store_true",
                    help="use a built-in sample catalogue of fictional devices (to try the app)")
     s.set_defaults(func=cmd_serve)

@@ -8,30 +8,6 @@
   ],
   "sources": [
     {
-      "name": "daraz-np",
-      "type": "daraz",
-      "enabled": true,
-      "role": "offers",
-      "region": "np",
-      "verified": false,
-      "domain": "www.daraz.com.np",
-      "categories": [
-        "mobile-phones",
-        "laptops",
-        "tablets",
-        "smart-watches"
-      ],
-      "queries": [
-        "power bank",
-        "fast charger",
-        "usb c cable",
-        "earbuds"
-      ],
-      "pages": 5,
-      "notes": "Largest marketplace. Reads the catalog's own ?ajax=true JSON; when Daraz answers with a captcha page it falls back to the listing embedded in the normal page (browser scrapers help here). Paced at one request per 5 s. Many third-party sellers: grey imports and clones are auto-flagged.",
-      "delay": 5
-    },
-    {
       "name": "hukut",
       "type": "auto",
       "enabled": true,
@@ -140,7 +116,7 @@
       "url_exclude": "/(category|tag|author|page)/",
       "price_from_text": true,
       "currency": "NPR",
-      "notes": "Nepal's main tech site; official launch prices + specs per model. Not a shop."
+      "notes": "Nepal's main tech site: official launch prices and specs for each model (not a shop). Pages like /samsung-galaxy-a56-price-in-nepal/."
     },
     {
       "name": "pricenepal",
@@ -224,5 +200,9 @@
       "url_include": "/in/smartphones/.*/buy/",
       "notes": "Official India prices (NPR is pegged to INR at 1.6) to judge whether a Nepali price is fair. Enable after reviewing Samsung's terms."
     }
+  ],
+  "defaults_version": 2,
+  "retired": [
+    "daraz-np"
   ]
 }

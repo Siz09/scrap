@@ -295,6 +295,16 @@ export const api = {
   job: (id: string) => request<Job>(`/api/jobs/${id}`),
   jobs: () => request<{ jobs: Job[]; worker_seen_at: string | null; jobs_mode: string }>("/api/jobs"),
   cancelJob: () => request<{ ok: boolean }>("/api/jobs/cancel", { method: "POST", headers: adminHeaders() }),
+  addSource: (url: string, role: string) =>
+    request<{ source: SourceRow; job: Job | null }>("/api/sources", {
+      method: "POST", headers: adminHeaders(), body: JSON.stringify({ url, role }),
+    }),
+  setSourceEnabled: (name: string, enabled: boolean) =>
+    request<SourceRow>(`/api/sources/${encodeURIComponent(name)}`, {
+      method: "PATCH", headers: adminHeaders(), body: JSON.stringify({ enabled }),
+    }),
+  removeSource: (name: string) =>
+    request<{ ok: boolean }>(`/api/sources/${encodeURIComponent(name)}`, { method: "DELETE", headers: adminHeaders() }),
   verifyAdmin: (key: string) =>
     request<{ ok: boolean }>("/api/admin/verify", { method: "POST", headers: { "X-Admin-Key": key } }),
 };
