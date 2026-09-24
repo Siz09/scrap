@@ -10,6 +10,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 
 from .paths import source_status
+from .pipeline import IngestStats, ingest
 from .sources import Fetcher, build
 from .sources.detect import detect, remember
 from .storage import Store
@@ -70,6 +71,8 @@ def run_check(entries: list[dict], log: Log = print, sample: int = 3, delay: flo
                     specd = sum(1 for p in got if p.specs)
                     status = "OK"
                     detail += f" | {len(got)} products, {priced} priced, {specd} with specs; e.g. {got[0].name[:40]!r}"
+                    if hasattr(fetcher, "summary"):
+                        detail += f" | via {fetcher.summary()}"
                 else:
                     detail += " | no products extracted"
             except Exception as ex:
@@ -90,20 +93,24 @@ def run_scrape(entries: list[dict], db_path, log: Log = print, limit: int = 300,
         with fetcher_factory(mode=mode, delay=delay, respect_robots=respect_robots) as fetcher:
             for e in entries:
                 n = 0
+                stats = IngestStats()
                 log(f"{e['name']}: scraping...")
                 try:
                     for product in crawl_entry(e, fetcher, limit):
                         if cancel and cancel.is_set():
                             break
-                        store.upsert(product)
+                        ingest(store, product, stats)   # raw -> clean -> refine -> index
                         n += 1
                         if verbose or n % 25 == 0:
                             log(f"  {n}: [{product.category.value}] {product.name}")
                 except Exception as ex:
                     log(f"{e['name']}: stopped after {n} products ({type(ex).__name__}: {ex})")
-                counts[e["name"]] = n
-                _save_status(e["name"], last_scrape_count=n, last_scraped_at=_now())
-                log(f"{e['name']}: {n} products")
+                counts[e["name"]] = stats.stored
+                _save_status(e["name"], last_scrape_count=stats.stored, last_scraped_at=_now(),
+                             last_rejected=stats.rejected, last_fixes=stats.fixes)
+                log(f"{e['name']}: {stats.line()}")
+                if hasattr(fetcher, "summary"):
+                    log(f"  scrapers used: {fetcher.summary()}")
                 if cancel and cancel.is_set():
                     log("cancelled")
                     break

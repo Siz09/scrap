@@ -1,8 +1,8 @@
 """Where the installed app keeps its files.
 
-An installed program can't write next to itself (site-packages, Program Files, a
-PyInstaller bundle), so the database, the editable source list and caches live in
-the per-user data directory. Override with DEVICESCOUT_HOME.
+The database, the editable source list and caches live in the per-user data
+directory, never inside the installed package. In Docker, DEVICESCOUT_HOME=/data
+(a volume shared by the website and scraper containers).
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ def source_status() -> Path:
 
 
 def packaged(name: str) -> Path:
-    """A file shipped inside the package (works from source, wheel, or PyInstaller bundle)."""
+    """A file shipped inside the package (works from a source checkout or an installed wheel)."""
     return Path(str(resources.files("devicescout") / name))
 
 

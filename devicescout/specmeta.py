@@ -42,6 +42,7 @@ SPECS: dict[str, tuple[str, str, str]] = {
     "has_nfc": ("NFC", "bool", "Connectivity"),
     "has_gps": ("GPS", "bool", "Connectivity"),
     "ports": ("Ports", "", "Connectivity"),
+    "os_upgrades": ("OS upgrades promised", "", "Platform"),
     "release_year": ("Released", "", "Other"),
     "expert_score": ("Expert review score", "/100", "Reviews"),
     "benchmark_score": ("Benchmark", "", "Reviews"),
@@ -61,6 +62,7 @@ USES: dict[str, tuple[str, str]] = {
     "programming": ("Programming", "Lots of RAM, strong processor"),
     "content_creation": ("Content creation", "Video editing, design, storage"),
     "fitness": ("Fitness", "GPS, water resistance, battery"),
+    "longevity": ("Lasts for years", "Long software support, recent and powerful enough to age well"),
 }
 
 # Must-have filters offered per category. op applies as `spec <op> value`.

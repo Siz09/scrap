@@ -97,6 +97,16 @@ PROFILES: dict[str, dict[Category, Weights]] = {
         Category.POWER_BANK: [("output_w", 0.7, True), ("capacity_mah", 0.3, True)],
         Category.CHARGER: [("output_w", 1.0, True)],
     },
+    # Will it still be good (and updated) in 3-5 years?
+    "longevity": {
+        Category.PHONE: [("os_upgrades", 0.30, True), ("release_year", 0.20, True), ("chip_tier", 0.20, True),
+                         ("water_rating", 0.10, True), ("storage_gb", 0.10, True), ("ram_gb", 0.10, True)],
+        Category.TABLET: [("os_upgrades", 0.3, True), ("release_year", 0.25, True), ("chip_tier", 0.25, True),
+                          ("storage_gb", 0.2, True)],
+        Category.LAPTOP: [("chip_tier", 0.3, True), ("ram_gb", 0.25, True), ("release_year", 0.2, True),
+                          ("storage_gb", 0.15, True), ("rating", 0.1, True)],
+        Category.SMARTWATCH: [("release_year", 0.4, True), ("water_rating", 0.3, True), ("battery_mah", 0.3, True)],
+    },
     "balanced": {
         Category.PHONE: [("chip_tier", 0.2, True), ("main_camera_mp", 0.1, True), ("optical_zoom_x", 0.1, True),
                          ("battery_mah", 0.15, True), ("charging_w", 0.1, True), ("refresh_rate_hz", 0.1, True),

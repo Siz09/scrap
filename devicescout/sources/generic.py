@@ -231,6 +231,12 @@ class GenericSource(Source):
         if price is None and self.cfg.price_from_text:
             price = price_from_text(body_text)
             currency = currency or "NPR"
+        valid_until = offers_ld.get("priceValidUntil")
+        # A sale price with the regular price published alongside (AggregateOffer or priceSpecification).
+        original = None
+        for spec in offers_ld.get("priceSpecification") or []:
+            if isinstance(spec, dict) and "ListPrice" in str(spec.get("priceType", "")):
+                original = parse_price(spec.get("price"))
         availability = str(offers_ld.get("availability", ""))
         in_stock = None if not availability else "InStock" in availability
 
@@ -270,7 +276,8 @@ class GenericSource(Source):
                 source=self.name, url=page.url, price=price, currency=currency, in_stock=in_stock,
                 scraped_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 region=self.cfg.region, seller=self.name, official=self.cfg.official,
-                variant=parse_variant(name),
+                variant=parse_variant(name), valid_until=str(valid_until)[:10] if valid_until else None,
+                original_price=original if original and price and original > price else None,
             ))
         product = Product(
             source=self.name,

@@ -9,6 +9,7 @@ only a reference for "is the Nepali price reasonable?", never a buyable price.
 from __future__ import annotations
 
 import json
+import logging
 import os
 
 RATES_TO_NPR: dict[str, float] = {
@@ -19,7 +20,11 @@ RATES_TO_NPR: dict[str, float] = {
     "GBP": 185.0,   # approximate; update
     "AED": 38.0,    # approximate; update
 }
-RATES_TO_NPR.update({k.upper(): float(v) for k, v in json.loads(os.getenv("DEVICESCOUT_RATES", "{}")).items()})
+try:
+    # Empty is normal: docker compose passes unset variables through as "".
+    RATES_TO_NPR.update({k.upper(): float(v) for k, v in json.loads(os.getenv("DEVICESCOUT_RATES") or "{}").items()})
+except (ValueError, AttributeError) as e:
+    logging.getLogger(__name__).warning("ignoring DEVICESCOUT_RATES (expected JSON like {\"USD\": 141.2}): %s", e)
 
 _ALIASES = {"RS": "NPR", "RS.": "NPR", "NRS": "NPR", "NRS.": "NPR", "रु": "NPR", "₹": "INR", "$": "USD", "€": "EUR", "£": "GBP"}
 

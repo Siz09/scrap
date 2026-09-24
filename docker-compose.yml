@@ -1,0 +1,53 @@
+# DeviceScout website + scraper.
+#
+#   docker compose up -d                        # site on http://localhost:8765, scraper every 6 h
+#   DOMAIN=devicescout.example.com docker compose --profile https up -d   # adds automatic HTTPS
+#
+# Both services share the `data` volume (SQLite database, sources.json, caches).
+# Edit the source list with:  docker compose exec scraper sh -c 'vi $DEVICESCOUT_HOME/sources.json'
+# or mount your own:          ./sources.json:/data/sources.json
+
+x-app: &app
+  image: ${DEVICESCOUT_IMAGE:-ghcr.io/siz09/scrap:latest}
+  build: .
+  restart: unless-stopped
+  volumes:
+    - data:/data
+  environment:
+    TZ: ${TZ:-Asia/Kathmandu}
+    DEVICESCOUT_RATES: ${DEVICESCOUT_RATES:-}
+
+services:
+  web:
+    <<: *app
+    ports:
+      - "${WEB_PORT:-8765}:8765"
+
+  scraper:
+    <<: *app
+    command: ["devicescout", "schedule", "--every", "${SCRAPE_EVERY:-6h}", "--check-first"]
+    healthcheck:
+      disable: true
+    depends_on:
+      - web
+
+  caddy:
+    image: caddy:2
+    profiles: ["https"]
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}   # your site's domain; its DNS must point at this server
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+
+volumes:
+  data:
+  caddy_data:
+  caddy_config:

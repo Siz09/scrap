@@ -4,6 +4,7 @@
   devicescout check                         # detect platforms + sample each source (run this first)
   devicescout scrape --all                  # scrape every enabled source
   devicescout scrape daraz-np gsmarena --limit 100
+  devicescout ask "photography phone under 1.2 lakh"
   devicescout advise -i                     # answer a few questions, get a shortlist
   devicescout advise --category phone --budget 30k-60k --use photography:2,battery --os android --need 5g
   devicescout parse-file page.html --url https://... --source gsmarena
@@ -18,6 +19,7 @@ import csv
 import json
 import logging
 import os
+import re
 import sys
 
 from scrapling.parser import Selector
@@ -88,7 +90,8 @@ def cmd_parse_file(args) -> None:
     if not product:
         sys.exit("no product found on page")
     if args.save:
-        Store(args.db).upsert(product)
+        from .pipeline import ingest
+        ingest(Store(args.db), product)
     print(json.dumps(product.to_dict(), indent=2, default=str))
 
 
@@ -219,6 +222,111 @@ def cmd_serve(args) -> None:
           read_only=args.read_only, sample=args.sample)
 
 
+def cmd_ask(args) -> None:
+    from .advisor import needs_from_query
+    from .query import parse_query
+
+    parsed = parse_query(" ".join(args.text))
+    print("Understood: " + (" | ".join(parsed.understood) or "nothing specific (showing all-rounders)"))
+    needs = needs_from_query(parsed, top=args.top)
+    advice = advise(Store(args.db).products(needs.category), needs)
+    if args.json:
+        print(json.dumps({"parsed": parsed.to_dict(), "advice": advice.to_dict()}, indent=2, default=str))
+    else:
+        _print_advice(advice)
+
+
+def _duration(text: str) -> float:
+    """'6h', '90m', '1d', '3600' -> seconds."""
+    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([smhd]?)\s*", text.lower())
+    if not m:
+        raise argparse.ArgumentTypeError(f"not a duration: {text!r} (use e.g. 30m, 6h, 1d)")
+    return float(m.group(1)) * {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)]
+
+
+def cmd_schedule(args) -> None:
+    """Scrape every enabled source on a fixed interval, forever (the Docker scraper service)."""
+    import random
+    import signal
+    import threading
+    import time
+
+    stop = threading.Event()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, lambda *_: stop.set())
+
+    def log(line: str) -> None:
+        print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}", flush=True)
+
+    if args.check_first:
+        log("checking sources...")
+        run_check(_entries(args), log=log, fetcher_factory=Fetcher)
+    while not stop.is_set():
+        started = time.monotonic()
+        log("scrape run starting")
+        try:
+            counts = run_scrape(_entries(args), args.db, log=log, limit=args.limit, delay=args.delay,
+                                fetcher_factory=Fetcher, cancel=stop)
+            log(f"scrape run finished: {sum(counts.values())} products in {time.monotonic() - started:.0f}s")
+        except Exception as e:  # keep the service alive; the next run may succeed
+            log(f"scrape run failed: {type(e).__name__}: {e}")
+        if args.once:
+            break
+        wait = args.every + random.uniform(0, args.jitter)
+        log(f"next run in {wait / 3600:.1f} h")
+        stop.wait(wait)
+    log("scheduler stopped")
+
+
+def cmd_deals(args) -> None:
+    from .deals import find_deals
+    category = Category(args.category) if args.category else None
+    deals = find_deals(Store(args.db), category, verified_only=not args.all)
+    if not deals:
+        print("No deals right now." + ("" if args.all else " (--all also shows unverified store claims)"))
+    for d in deals[: args.limit]:
+        o = d.offer
+        was = f" (was Rs {o.original_price:,.0f}, claims {d.claimed_pct:g}% off)" if d.claimed_pct else ""
+        if d.saving_pct is None:
+            real = "no market price to compare"
+        else:
+            where = "below" if d.saving_pct >= 0 else "above"
+            real = f"{abs(d.saving_pct):g}% {where} market Rs {d.market_price:,.0f}"
+        ends = f", ends {o.valid_until}" if o.valid_until else ""
+        print(f"{d.product.name:<32} Rs {o.price_npr:>9,.0f} at {o.seller or o.source}{was}")
+        print(f"{'':<32} {real} | {', '.join(d.verdicts)}{ends}")
+
+
+def cmd_search(args) -> None:
+    store = Store(args.db)
+    category = Category(args.category) if args.category else None
+    for key in store.search(" ".join(args.text), category, limit=args.limit):
+        p = store.product(key)
+        price = f"Rs {p.best_price:,.0f}" if p.best_price else "no Nepal price"
+        print(f"{p.name:<45} {p.category.value:<11} {price}")
+
+
+def cmd_reprocess(args) -> None:
+    from .pipeline import reprocess
+    stats = reprocess(Store(args.db))
+    print("rebuilt catalogue from raw records: " + stats.line())
+
+
+def cmd_quality(args) -> None:
+    q = Store(args.db).quality_summary()
+    print(f"raw records kept: {q['raw_records']}")
+    print("issues: " + (", ".join(f"{v} {k}" for k, v in q["by_kind"].items()) or "none"))
+    for r in q["top"]:
+        print(f"  {r['n']:>5}  {r['source']:<15} {r['kind']:<13} {r['field']:<16} e.g. {r['example'][:70]}")
+
+
+def cmd_scrapers(args) -> None:
+    from .sources.backends import describe
+    for b in describe():
+        print(f"{b['name']:<18} {'installed' if b['available'] else 'not installed':<14} "
+              f"{'browser' if b['browser'] else 'http'}")
+
+
 def cmd_export(args) -> None:
     category = Category(args.category) if args.category else None
     rows = [p.to_dict() for p in Store(args.db).products(category)]
@@ -268,6 +376,12 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--save", action="store_true")
     s.set_defaults(func=cmd_parse_file)
 
+    s = sub.add_parser("ask", help='plain words: devicescout ask "photography phone under 1.2 lakh"')
+    s.add_argument("text", nargs="+")
+    s.add_argument("--top", type=int, default=5)
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_ask)
+
     s = sub.add_parser("advise", help="shortlist devices for a buyer's needs and budget")
     s.add_argument("-i", "--interactive", action="store_true", help="ask questions instead of flags")
     s.add_argument("--category", default="phone", choices=[c.value for c in Category])
@@ -294,6 +408,37 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--sample", action="store_true",
                    help="use a built-in sample catalogue of fictional devices (to try the app)")
     s.set_defaults(func=cmd_serve)
+
+    s = sub.add_parser("schedule", help="scrape all enabled sources every N hours (runs until stopped)")
+    s.add_argument("--every", type=_duration, default=_duration("6h"), help="interval, e.g. 30m, 6h, 1d")
+    s.add_argument("--jitter", type=_duration, default=_duration("10m"),
+                   help="random extra wait so runs don't hit sites at the same minute every day")
+    s.add_argument("--limit", type=int, default=300, help="max products per source per run")
+    s.add_argument("--delay", type=float, default=2.0, help="seconds between hits to one host")
+    s.add_argument("--check-first", action="store_true", help="run a source check before the first scrape")
+    s.add_argument("--once", action="store_true", help="one run, then exit (for cron)")
+    s.set_defaults(func=cmd_schedule, names=[])
+
+    s = sub.add_parser("deals", help="current deals, checked against other sellers and price history")
+    s.add_argument("--category", choices=[c.value for c in Category])
+    s.add_argument("--all", action="store_true", help="include store claims we couldn't verify")
+    s.add_argument("--limit", type=int, default=30)
+    s.set_defaults(func=cmd_deals)
+
+    s = sub.add_parser("search", help="full-text search the catalogue (names, aliases, chipsets)")
+    s.add_argument("text", nargs="+")
+    s.add_argument("--category", choices=[c.value for c in Category])
+    s.add_argument("--limit", type=int, default=20)
+    s.set_defaults(func=cmd_search)
+
+    s = sub.add_parser("reprocess", help="rebuild the catalogue from stored raw records (after parser updates)")
+    s.set_defaults(func=cmd_reprocess)
+
+    s = sub.add_parser("quality", help="what cleaning rejected or fixed, and where sources disagree")
+    s.set_defaults(func=cmd_quality)
+
+    s = sub.add_parser("scrapers", help="which scraper backends are installed for the fallback chain")
+    s.set_defaults(func=cmd_scrapers)
 
     s = sub.add_parser("export", help="dump the catalogue as CSV or JSON")
     s.add_argument("--format", choices=["csv", "json"], default="csv")

@@ -24,6 +24,10 @@ Version numbers are from PyPI as of September 2026.
 - [yubint/darazscrape-api](https://github.com/yubint/darazscrape-api): a Django + Celery price tracker for daraz.com.np product pages.
 - Several paid Apify actors scrape Daraz, for example "Daraz NP Product Scraper". They're useful if Daraz blocks your IP and you'd rather pay than maintain a workaround.
 
+## What DeviceScout does with them
+
+`sources/backends.py` puts several of these behind one interface and tries them in order. Each is used as a *fallback*, not run in parallel on the same page. Running two libraries over one page returns the same data twice; the value of having several is that a site blocking one usually doesn't block another. The chain is Scrapling HTTP → urllib → Scrapling dynamic (Playwright) → Scrapling stealth (Camoufox) → Crawl4AI → Firecrawl. The last two are optional installs.
+
 ## Recommendation
 
 1. Keep Scrapling. If crawls grow past a few thousand pages per site, move the long-running ones onto `scrapling.spiders` for concurrency and pause/resume. `ShopifySpider` and `SitemapSpider` line up with `sources/platforms.py` and `sources/generic.py`.

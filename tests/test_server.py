@@ -103,3 +103,24 @@ def test_must_options_make_sense_per_category(client):
     for c in cats.values():   # the UI keys controls by spec key: no duplicates within a category
         keys = [m["key"] for m in c["musts"]]
         assert len(keys) == len(set(keys))
+
+
+def test_ask_endpoint(client):
+    r = client.post("/api/ask", json={"q": "long lasting android phone under 1 lakh"}).json()
+    assert r["parsed"]["uses"] == ["longevity"] and r["parsed"]["budget_max"] == 100000
+    assert r["advice"]["picks"][0]["name"] == "Nimbus Mini S"      # 7 promised OS upgrades
+    assert client.post("/api/parse", json={"q": "gaming laptop under 1.2 lakh"}).json()["category"] == "laptop"
+
+
+def test_deals_endpoint(client):
+    r = client.get("/api/deals").json()
+    names = {d["name"]: d for d in r["items"]}
+    assert {"Koshi K5 Camera", "Nimbus Watch 4", "Everest Book 14 Air"} <= set(names)
+    assert "Lumo Power 7" not in names                               # paper discount hidden by default
+    assert all(d["verified"] for d in r["items"])
+    everything = {d["name"]: d for d in client.get("/api/deals", params={"verified_only": "false"}).json()["items"]}
+    assert "paper discount" in everything["Lumo Power 7"]["verdicts"]
+    assert "inflated original" in everything["Everest Charge 20K"]["verdicts"]
+    assert names["Koshi K5 Camera"]["valid_until"]
+    phones = client.get("/api/deals", params={"category": "phone"}).json()["items"]
+    assert [d["name"] for d in phones] == ["Koshi K5 Camera"]

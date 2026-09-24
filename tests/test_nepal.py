@@ -172,7 +172,7 @@ def test_advise_photography_within_budget(catalogue):
     names = [p.ranked.product.name for p in a.picks]
     assert names[0] == "Alpha Cam"
     assert "Delta Flagship" not in names and "Omega Pricey" not in names
-    assert a.excluded["over_budget"] == 1               # Omega; Delta is within stretch range
+    assert a.excluded["over_budget"] == 2               # Omega, plus Delta (shown only as the stretch pick)
     assert a.stretch_pick and a.stretch_pick.ranked.product.name == "Delta Flagship"
     assert any("optical zoom" in s for s in a.picks[0].strengths)
     assert a.picks[0].where_to_buy[0]["price_npr"] == 58000

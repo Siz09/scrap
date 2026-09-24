@@ -63,6 +63,16 @@ export function keySpecs(category: string, specs: Specs, limit = 6): string[] {
   return (KEY_SPECS[category] ?? Object.keys(specs)).filter((k) => specs[k] != null).slice(0, limit);
 }
 
+/** Short chip text: booleans become their label ("GPS"), false ones are dropped by the caller. */
+export function chipSpec(key: string, value: SpecValue, meta?: SpecMeta): string {
+  if (typeof value === "boolean") return meta?.label ?? key;
+  return formatSpec(key, value, meta);
+}
+
+export function chipKeys(category: string, specs: Specs, limit = 4): string[] {
+  return keySpecs(category, specs, 12).filter((k) => specs[k] !== false).slice(0, limit);
+}
+
 // For comparison highlighting: which direction is "better". Some specs are preferences, not quality.
 export const LOWER_IS_BETTER = new Set(["weight_g"]);
 export const NO_BEST = new Set(["display_size_in", "camera_count"]);

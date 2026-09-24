@@ -152,3 +152,18 @@ def test_rank_profiles(tmp_path):
 
     assert rank(phones, "gaming", Category.PHONE, os="ios") == []
     assert all(0 <= r.coverage <= 1 and 0 <= r.score <= 100 for r in photo)
+
+
+def test_empty_or_bad_rates_env_does_not_crash():
+    import importlib
+    import os
+
+    import devicescout.currency as cur
+    for value in ("", "not json"):
+        os.environ["DEVICESCOUT_RATES"] = value
+        try:
+            importlib.reload(cur)
+            assert cur.to_npr(1, "INR") == 1.6
+        finally:
+            del os.environ["DEVICESCOUT_RATES"]
+    importlib.reload(cur)

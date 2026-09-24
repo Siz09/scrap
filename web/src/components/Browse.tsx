@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type Summary } from "../api";
 import { useApp } from "../context";
-import { formatSpec, keySpecs, npr, parseAmount } from "../format";
+import { chipKeys, chipSpec, npr, parseAmount } from "../format";
 
 const PAGE = 40;
 
@@ -16,10 +16,11 @@ export default function Browse() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
 
+  const effectiveSort = q ? (sort === "price" ? "relevance" : sort) : sort === "relevance" ? "price" : sort;
   const params = {
-    category: category || undefined, q, sort,
+    category: category || undefined, q, sort: effectiveSort,
     min_price: parseAmount(minText) ?? undefined, max_price: parseAmount(maxText) ?? undefined,
-    priced_only: sort.includes("price") ? "true" : undefined,
+    priced_only: effectiveSort.includes("price") ? "true" : undefined,
   };
   const paramKey = JSON.stringify(params);
 
@@ -64,7 +65,8 @@ export default function Browse() {
         </label>
         <label>
           <span>Sort</span>
-          <select value={sort} onChange={(e) => setSort(e.target.value)}>
+          <select value={effectiveSort} onChange={(e) => setSort(e.target.value)}>
+            {q && <option value="relevance">Best match</option>}
             <option value="price">Price: low to high</option>
             <option value="-price">Price: high to low</option>
             <option value="rating">Buyer rating</option>
@@ -90,8 +92,8 @@ export default function Browse() {
                 <div className="muted small">★ {p.rating.toFixed(1)}{p.review_count ? ` (${p.review_count.toLocaleString("en-IN")})` : ""}</div>
               )}
               <ul className="specline compact">
-                {keySpecs(p.category, p.specs, 4).map((k) => (
-                  <li key={k}>{formatSpec(k, p.specs[k], meta.specs[k])}</li>
+                {chipKeys(p.category, p.specs).map((k) => (
+                  <li key={k}>{chipSpec(k, p.specs[k], meta.specs[k])}</li>
                 ))}
               </ul>
               <button type="button" className={`btn ghost small ${inCompare ? "on" : ""}`} aria-pressed={inCompare}

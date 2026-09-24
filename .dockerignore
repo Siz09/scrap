@@ -1,0 +1,12 @@
+.git
+.github
+**/__pycache__
+**/*.pyc
+*.egg-info
+build
+dist
+web/node_modules
+devicescout/web/dist
+tests
+docs
+*.db

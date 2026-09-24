@@ -79,24 +79,50 @@ DEVICES: list[tuple] = [
 ]
 
 
+# Promised major OS upgrades (fictional), so "lasts for years" has something to rank on.
+OS_UPGRADES = {"Nimbus Z9 Ultra": 7, "Everest P8 Pro": 5, "Koshi K5 Camera": 4, "Lumo Power 7": 3,
+               "Terai Neo 3": 2, "Koshi K3 Lite": 2, "Nimbus Mini S": 7, "Orchid One": 6,
+               "Koshi Tab 11": 3, "Orchid Pad Air": 6}
+
+
+# Fictional sales, one per verdict the Deals page can show:
+# name -> (store index, price factor vs normal, crossed-out factor or None, sale ends in N days or None)
+SALES = {
+    "Koshi K5 Camera": (1, 0.86, 1.10, 9),        # genuinely cheaper than other sellers: real deal
+    "Everest Book 14 Air": (0, 0.95, 1.12, None),  # modest real saving: good price
+    "Lumo Power 7": (1, 1.03, 1.30, 5),           # "30% off" but no cheaper than elsewhere: paper discount
+    "Everest Charge 20K": (0, 0.99, 1.80, None),   # crossed-out price nobody ever charged: inflated
+    "Nimbus Watch 4": (0, 0.88, None, None),       # quiet price cut, no banner: still a real deal
+}
+
+
 def build_sample(path: Path) -> Path:
     if path.exists():
         path.unlink()
     store = Store(path)
     now = datetime.now(timezone.utc)
     for i, (cat, name, brand, price, specs, rating, reviews) in enumerate(DEVICES):
+        if name in OS_UPGRADES:
+            specs = {**specs, "os_upgrades": OS_UPGRADES[name]}
         offers = []
         for j, (seller, official) in enumerate(STORES):
             if (i + j) % 3 == 2 and j:  # not every store stocks everything
                 continue
             p = round(price * (1 + 0.03 * j) / 100) * 100 - 1
-            # A little price history: slightly higher a month ago.
-            for days, bump in ((30, 1.05), (0, 1.0)):
+            sale = SALES.get(name)
+            on_sale = sale is not None and sale[0] == j
+            # A little price history: about the same a month ago, then today's price.
+            for days, bump in ((30, 1.01), (0, 1.0)):
+                today = days == 0
+                factor = sale[1] if on_sale and today else bump
                 offers.append(Offer(
                     source=seller.lower().replace(" ", "-"), url=f"https://example.com/sample/{i}/{j}",
-                    price=round(p * bump), currency="NPR", in_stock=(i + j) % 5 != 4,
+                    price=round(p * factor), currency="NPR", in_stock=(i + j) % 5 != 4 or on_sale,
                     scraped_at=(now - timedelta(days=days)).isoformat(timespec="seconds"),
                     region="np", seller=seller, official=official,
+                    original_price=round(p * sale[2]) if on_sale and today and sale[2] else None,
+                    valid_until=((now + timedelta(days=sale[3])).date().isoformat()
+                                 if on_sale and today and sale[3] else None),
                 ))
         if cat == C.PHONE and i % 2 == 0:  # a bait listing, to show fake-price detection
             offers.append(Offer(source="sample-marketplace", url=f"https://example.com/sample/{i}/bait",

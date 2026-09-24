@@ -1,8 +1,9 @@
 """Local web app: JSON API + the built Vite frontend, served by one process.
 
-`devicescout serve` (or the desktop executable) runs this on 127.0.0.1 and opens the
-browser. `--read-only` removes the scraping endpoints so the same app can be hosted
-publicly for buyers while scraping runs elsewhere.
+In Docker this is the `web` service: `devicescout serve --host 0.0.0.0 --read-only`.
+Read-only removes the scraping endpoints, so visitors can only read; the `scraper`
+service fills the shared database on a schedule. Locally, `devicescout serve` runs
+on 127.0.0.1 with scraping enabled and opens the browser.
 """
 
 from __future__ import annotations
@@ -19,7 +20,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import __version__
-from .advisor import Needs, advise
+from .advisor import Needs, advise, needs_from_query
+from .query import parse_query
 from .jobs import JobManager, load_status, run_check, run_scrape
 from .models import Category, Product
 from .paths import sample_db, web_dist
@@ -52,6 +54,12 @@ class NeedsIn(BaseModel):
     top: int = Field(default=5, ge=1, le=20)
 
 
+class AskIn(BaseModel):
+    q: str = Field(min_length=1, max_length=300)
+    category: Category = Category.PHONE      # used when the text names no device type
+    top: int = Field(default=5, ge=1, le=20)
+
+
 class JobIn(BaseModel):
     kind: Literal["check", "scrape"]
     names: list[str] = Field(default_factory=list)   # empty = all enabled
@@ -78,6 +86,15 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
     def store() -> Store:
         return Store(db)
 
+    @app.get("/api/health", include_in_schema=False)
+    def health():
+        s = store()
+        try:
+            s.db.execute("SELECT 1").fetchone()
+        finally:
+            s.close()
+        return {"ok": True, "version": __version__}
+
     @app.get("/api/meta")
     def get_meta():
         s = store()
@@ -87,6 +104,32 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
             s.close()
         return {**spec_meta(), "stats": stats, "version": __version__, "read_only": read_only, "sample": sample}
 
+    def run_advice(needs: Needs) -> dict:
+        s = store()
+        try:
+            advice = advise(s.products(needs.category), needs)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        finally:
+            s.close()
+
+        def out(pick):
+            return {**pick.to_dict(), **summary(pick.ranked.product), "price_npr": pick.price} if pick else None
+
+        return {"picks": [out(p) for p in advice.picks], "value_pick": out(advice.value_pick),
+                "stretch_pick": out(advice.stretch_pick), "considered": advice.considered,
+                "excluded": advice.excluded}
+
+    @app.post("/api/parse")
+    def post_parse(body: AskIn):
+        """Plain words -> structured needs, for the UI to show and let the buyer edit."""
+        return parse_query(body.q).to_dict()
+
+    @app.post("/api/ask")
+    def post_ask(body: AskIn):
+        parsed = parse_query(body.q)
+        return {"parsed": parsed.to_dict(), "advice": run_advice(needs_from_query(parsed, body.category, body.top))}
+
     @app.post("/api/advise")
     def post_advise(body: NeedsIn):
         needs = Needs(
@@ -95,36 +138,27 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
             must={m.key: (m.op, m.value) for m in body.must}, official_only=body.official_only,
             in_stock_only=body.in_stock_only, top=body.top,
         )
-        s = store()
-        try:
-            advice = advise(s.products(needs.category), needs)
-        except ValueError as e:
-            raise HTTPException(400, str(e))
-        finally:
-            s.close()
-        def out(pick):
-            return {**pick.to_dict(), **summary(pick.ranked.product), "price_npr": pick.price} if pick else None
-
-        return {"picks": [out(p) for p in advice.picks], "value_pick": out(advice.value_pick),
-                "stretch_pick": out(advice.stretch_pick), "considered": advice.considered,
-                "excluded": advice.excluded}
+        return run_advice(needs)
 
     @app.get("/api/products")
     def list_products(category: Category | None = None, q: str = "", min_price: float | None = None,
-                      max_price: float | None = None, sort: Literal["price", "-price", "name", "rating"] = "name",
+                      max_price: float | None = None, sort: Literal["relevance", "price", "-price", "name", "rating"] = "name",
                       priced_only: bool = False, limit: int = Query(60, le=500), offset: int = 0):
         s = store()
         try:
             items = s.products(category)
+            if q.strip():
+                # Full-text index: matches aliases and chipsets too, best matches first.
+                rank = {k: i for i, k in enumerate(s.search(q, category, limit=500))}
+                items = sorted((p for p in items if p.key in rank), key=lambda p: rank[p.key])
         finally:
             s.close()
-        words = q.lower().split()
-        items = [p for p in items if all(w in f"{p.name} {p.brand or ''}".lower() for w in words)]
         if priced_only or min_price is not None or max_price is not None:
             items = [p for p in items if p.best_price is not None
                      and (min_price is None or p.best_price >= min_price)
                      and (max_price is None or p.best_price <= max_price)]
         keys = {
+            "relevance": lambda p: 0,   # keep search order
             "name": lambda p: p.name.lower(),
             "price": lambda p: (p.best_price is None, p.best_price or 0),
             "-price": lambda p: (p.best_price is None, -(p.best_price or 0)),
@@ -158,6 +192,27 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
         return {**summary(p), "offers": offers, "history": history, "spec_sources": spec_sources,
                 "gtin": p.gtin, "updated_at": p.updated_at}
 
+    @app.get("/api/deals")
+    def get_deals(category: Category | None = None, verified_only: bool = True,
+                  max_price: float | None = None, limit: int = Query(60, le=500)):
+        from .deals import find_deals
+        s = store()
+        try:
+            deals = find_deals(s, category, verified_only)
+        finally:
+            s.close()
+        if max_price is not None:
+            deals = [d for d in deals if (d.offer.price_npr or 0) <= max_price]
+        return {"total": len(deals), "items": [d.to_dict() for d in deals[:limit]]}
+
+    @app.get("/api/quality")
+    def get_quality():
+        s = store()
+        try:
+            return s.quality_summary()
+        finally:
+            s.close()
+
     @app.get("/api/sources")
     def get_sources():
         status = load_status()
@@ -172,7 +227,8 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
                 "url": e.get("base_url") or (f"https://{e['domain']}" if e.get("domain") else None),
                 **status.get(e["name"], {}),
             })
-        return {"sources": out, "file": str(sources)}
+        from .sources.backends import describe
+        return {"sources": out, "file": str(sources), "scrapers": describe()}
 
     def _require_writable():
         if read_only:

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type Job, type SourceRow } from "../api";
+import { api, type Job, type Quality, type ScraperInfo, type SourceRow } from "../api";
 import { useApp } from "../context";
 import { relTime } from "../format";
 
@@ -12,12 +12,15 @@ export default function Sources() {
   const { meta, refreshMeta } = useApp();
   const [rows, setRows] = useState<SourceRow[]>([]);
   const [file, setFile] = useState("");
+  const [scrapers, setScrapers] = useState<ScraperInfo[]>([]);
+  const [quality, setQuality] = useState<Quality | null>(null);
   const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState<string | null>(null);
   const logRef = useRef<HTMLPreElement>(null);
 
   const load = useCallback(() => {
-    api.sources().then((r) => { setRows(r.sources); setFile(r.file); }).catch((e) => setError(e.message));
+    api.sources().then((r) => { setRows(r.sources); setFile(r.file); setScrapers(r.scrapers); }).catch((e) => setError(e.message));
+    api.quality().then(setQuality).catch(() => setQuality(null));
   }, []);
   useEffect(load, [load]);
 
@@ -96,6 +99,42 @@ export default function Sources() {
         </section>
       )}
 
+      <div className="pipeline">
+        <section className="panel">
+          <h2>Scrapers</h2>
+          <p className="muted small">Tried in this order. When a site blocks one, the next takes over, and the winner is remembered for that site.</p>
+          <ol className="scrapers">
+            {scrapers.map((b) => (
+              <li key={b.name} className={b.available ? "" : "off"}>
+                <span>{b.name}</span>
+                <span className={`badge ${b.available ? "good" : ""}`}>{b.available ? "installed" : "not installed"}</span>
+              </li>
+            ))}
+          </ol>
+        </section>
+        <section className="panel">
+          <h2>Data quality</h2>
+          {quality ? (
+            <>
+              <p className="muted small">
+                {quality.raw_records.toLocaleString("en-IN")} raw records kept for reprocessing.{" "}
+                {Object.entries(quality.by_kind).map(([k, v]) => `${v} ${k.replace("_", " ")}`).join(" · ") || "No issues logged."}
+              </p>
+              {quality.top.length > 0 && (
+                <ul className="issues">
+                  {quality.top.slice(0, 6).map((q) => (
+                    <li key={q.source + q.kind + q.field}>
+                      <b>{q.n}×</b> {q.source}: {q.kind.replace("_", " ")} <code>{q.field}</code>
+                      <div className="muted small clamp">{q.example}</div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </>
+          ) : <p className="muted small">No data yet.</p>}
+        </section>
+      </div>
+
       <div className="table-wrap">
         <table className="sources-table">
           <thead>
@@ -117,7 +156,7 @@ export default function Sources() {
                   {r.check ? <span className={`badge ${r.check === "OK" ? "good" : "low"}`}>{r.check}</span> : <span className="muted">—</span>}
                   {r.check_detail && <div className="muted small clamp" title={r.check_detail}>{r.check_detail}</div>}
                 </td>
-                <td>{r.last_scraped_at ? <>{r.last_scrape_count} items<div className="muted small">{relTime(r.last_scraped_at)}</div></> : <span className="muted">—</span>}</td>
+                <td>{r.last_scraped_at ? <>{r.last_scrape_count} items{r.last_rejected ? <span className="muted small"> ({r.last_rejected} rejected)</span> : null}<div className="muted small">{relTime(r.last_scraped_at)}</div></> : <span className="muted">—</span>}</td>
                 <td className="row-actions">
                   <button type="button" className="link small" disabled={locked || running} onClick={() => start("check", [r.name])}>Check</button>
                   <button type="button" className="link small" disabled={locked || running} onClick={() => start("scrape", [r.name])}>Update</button>
