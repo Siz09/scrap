@@ -9,15 +9,13 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 from urllib.parse import urlparse
 
+from ..paths import detect_cache
 from .base import Fetcher
 from .generic import GenericSource, SiteConfig, extract_jsonld_product, sitemap_urls
 
 log = logging.getLogger(__name__)
-
-CACHE = Path(".devicescout_detect.json")
 
 
 def detect(fetcher: Fetcher, base_url: str) -> dict:
@@ -64,15 +62,15 @@ def detect(fetcher: Fetcher, base_url: str) -> dict:
 
 def cached_platform(name: str) -> str | None:
     try:
-        return json.loads(CACHE.read_text()).get(name, {}).get("platform")
+        return json.loads(detect_cache().read_text()).get(name, {}).get("platform")
     except (OSError, json.JSONDecodeError):
         return None
 
 
 def remember(name: str, report: dict) -> None:
     try:
-        data = json.loads(CACHE.read_text())
+        data = json.loads(detect_cache().read_text())
     except (OSError, json.JSONDecodeError):
         data = {}
     data[name] = report
-    CACHE.write_text(json.dumps(data, indent=2))
+    detect_cache().write_text(json.dumps(data, indent=2))

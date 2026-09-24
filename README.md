@@ -12,14 +12,74 @@ sources.json ─► fetch (Scrapling) ─► adapter (Daraz JSON │ Shopify │
 
 ## Install
 
+DeviceScout runs on your computer as a local web app: a small server plus a browser UI. There are three ways to install it.
+
+**1. Desktop app (no Python needed).** Download `DeviceScout-windows-x64.exe`, `DeviceScout-macos-arm64` or `DeviceScout-linux-x64` from the GitHub Releases page, then double-click it. A console window shows the address and your browser opens the app. Close the window to stop it. The builds are unsigned, so Windows SmartScreen and macOS Gatekeeper will warn the first time: choose "Run anyway" on Windows, or right-click then Open on macOS.
+
+**2. pip.** You need Python 3.10 or newer.
+
+```bash
+pip install "git+https://github.com/Siz09/scrap.git"
+devicescout serve            # opens http://127.0.0.1:8765
+devicescout serve --sample   # try it with a fictional demo catalogue first
+```
+
+**3. From source,** for development:
+
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-scrapling install        # only needed for fetch_mode dynamic / stealth (downloads browsers)
+(cd web && npm ci && npm run build)   # builds the UI into devicescout/web/dist
 pytest
+devicescout serve
 ```
 
-## First run (on a machine with internet)
+Your database, your editable copy of `sources.json`, and caches are stored in a per-user folder, never next to the program:
+
+| System | Folder |
+|---|---|
+| Windows | `%LOCALAPPDATA%\DeviceScout` |
+| macOS | `~/Library/Application Support/DeviceScout` |
+| Linux | `~/.local/share/devicescout` |
+
+Set `DEVICESCOUT_HOME` to use a different folder.
+
+## Using the app
+
+- **Find a device.**
+  1. Pick a category and a budget in NPR (`45000`, `45k` and `1.5 lakh` all work).
+  2. Tap what matters in order of importance: photography, gaming, battery, student, and so on.
+  3. Add any must-haves (5G, NFC, minimum RAM, maximum weight...) and an OS.
+
+  Results update as you change the inputs. Each device card shows a fit score, a confidence level, the reasons for its placing, and where to buy it. You'll also see a *Save money* pick and a *Worth stretching?* pick when one of them applies.
+- **Browse.** Search and filter the whole catalogue, sorted by price or rating.
+- **Device page.**
+  - Every Nepali seller's price, including ones ignored as implausible (possible fakes).
+  - Price history and full specs. Hover a spec to see which site it came from.
+- **Compare.** Up to four devices side by side, with the best value in each row highlighted.
+- **Data sources.**
+  - *Check sources* tests every site from your connection.
+  - *Update prices* scrapes them and shows a live log.
+  - Each source shows its last result.
+
+The app is also a PWA (installable web app): in Chrome or Edge, use "Install app" to get its own window and icon. On Android, use "Add to Home screen".
+
+## Hosting it for buyers
+
+Buyers shouldn't need to install anything. Run the scraper on your own machine or server, and serve the same app read-only:
+
+```bash
+devicescout scrape --all                                        # e.g. nightly, from cron / Task Scheduler
+devicescout serve --host 0.0.0.0 --port 8765 --read-only --no-browser
+```
+
+`--read-only` removes the scraping endpoints, so visitors can only read. Put it behind a reverse proxy with HTTPS, such as Caddy or nginx. The PWA install prompt only appears over HTTPS.
+
+## Command line
+
+The same features work without the UI.
+
+### First run (on a machine with internet)
 
 ```bash
 devicescout sources          # list every configured source
@@ -29,7 +89,7 @@ devicescout scrape --all     # fill the database (specs from GSMArena, prices fr
 
 Every source in `sources.json` has `verified: false` because none has been run against the live site yet. `check` is how you find out which ones work. When a source fails, the output tells you what to change: `url_include`, `collections`, `fetch_mode`, or selectors.
 
-## Get advice
+### Get advice
 
 ```bash
 devicescout advise -i        # answer a few questions
@@ -64,7 +124,7 @@ compared 2 devices (skipped: 1 no nepal price)
 
 **Budget formats:** `50000`, `50k`, `30k-60k`, `1.5 lakh`, `40000-`
 
-### How the advisor decides
+## How the advisor decides
 
 1. **Hard filters.** Only offers from Nepal count, in NPR. Budget, OS, brands, must-haves, and the `--official-only` and `--in-stock` options are applied here. If a must-have *can't be checked* because the data is missing, the device isn't dropped. It's marked "could not confirm" and loses points, so a listing can't win just by leaving data out.
 2. **Weighting.** The weights for each use are blended. A fixed 20% goes to "is it actually good": expert review score, buyer rating (only with at least 5 reviews), and model year.
@@ -96,8 +156,15 @@ To add a store, add `{"name": ..., "type": "auto", "base_url": ...}` and run `de
 
 ## Code map
 
-| Module | What it does |
+| Path | What it does |
 |---|---|
+| `web/` | Vite + React + TypeScript frontend. `npm run dev` proxies `/api` to a running `devicescout serve`; `npm run build` writes to `devicescout/web/dist`. The build is committed, so a pip install from git works without Node |
+| `devicescout/server.py` | FastAPI app: `/api/meta`, `/api/advise`, `/api/products`, `/api/sources` and `/api/jobs` (background check/scrape), plus the built UI. API docs are at `/api/docs` |
+| `devicescout/app.py` | Double-click entry point: picks a free port and opens the browser |
+| `devicescout/jobs.py` | Check and scrape runs, shared by the CLI and the UI |
+| `devicescout/paths.py` | Per-user data folder; finds files bundled with the package |
+| `devicescout/sample.py` | The fictional demo catalogue behind `serve --sample` |
+| `devicescout/specmeta.py` | Labels, units, use cases and must-have options the UI renders from |
 | `sources/base.py` | `Fetcher`: a cookie-keeping Scrapling session with static, dynamic or stealth mode, per-host throttling and robots.txt checks |
 | `sources/daraz.py`, `platforms.py`, `generic.py`, `gsmarena.py` | The site adapters described above |
 | `sources/detect.py`, `registry.py` | Platform auto-detection, and building adapters from `sources.json` |
@@ -106,6 +173,8 @@ To add a store, add `{"name": ..., "type": "auto", "base_url": ...}` and run `de
 | `pricing.py` | Detects fake, used or mislisted offers |
 | `storage.py` | SQLite. One row per model, matched by barcode first and then by cleaned name. Price history is kept per seller and variant, and each spec records which source it came from |
 | `scoring.py`, `advisor.py` | Use-case weights, percentile scoring, and the explained shortlist |
+| `packaging/devicescout.spec` | PyInstaller one-file build, run with `pyinstaller packaging/devicescout.spec` |
+| `.github/workflows/` | `ci.yml` runs the tests and checks the committed UI build. `release.yml` builds Windows, macOS and Linux executables plus the wheel, and publishes them on `v*` tags |
 
 See [docs/scrapers.md](docs/scrapers.md) for the other scraping tools and when to use them.
 
@@ -114,4 +183,5 @@ See [docs/scrapers.md](docs/scrapers.md) for the other scraping tools and when t
 - **Nothing has run against a live site yet.** This build environment blocks those hosts. The tests use fixtures that match each platform's documented format, and the Daraz field names come from a working open-source client. Run `check` before you trust any source.
 - **Store listings are thin on specs.** A Daraz-only device scores with low confidence until GSMArena or a spec-rich store provides its specs. Scrape GSMArena in the same run.
 - **Specs aren't quality.** Expert scores (Notebookcheck, and DXOMARK once it's enabled) are what make the photography and gaming rankings trustworthy. `chip_tier` is a hand-made stand-in until benchmark data is added.
+- **The executable only does plain HTTP scraping.** It leaves out the browser engines to stay small (about 40 MB). Sites that need `fetch_mode: dynamic` or `stealth` need the pip install plus `scrapling install`.
 - **Terms of service.** Check each site's terms and robots.txt, and keep the default delays. Prefer an official feed or API wherever a store offers one.

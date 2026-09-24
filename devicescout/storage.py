@@ -61,7 +61,9 @@ def _now() -> str:
 
 class Store:
     def __init__(self, path: str | Path = "devicescout.db"):
-        self.db = sqlite3.connect(str(path))
+        # check_same_thread=False: the web server hands a Store to worker threads; each request
+        # still opens its own Store, so a connection is never used by two threads at once.
+        self.db = sqlite3.connect(str(path), check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
 
@@ -136,10 +138,16 @@ class Store:
         self.db.commit()
         return key
 
-    def products(self, category: Category | None = None) -> list[Product]:
-        q, args = "SELECT * FROM products", ()
+    def products(self, category: Category | None = None, key: str | None = None) -> list[Product]:
+        q, where, args = "SELECT * FROM products", [], []
         if category:
-            q, args = q + " WHERE category = ?", (category.value,)
+            where.append("category = ?")
+            args.append(category.value)
+        if key:
+            where.append("key = ?")
+            args.append(key)
+        if where:
+            q += " WHERE " + " AND ".join(where)
         out = []
         for row in self.db.execute(q, args).fetchall():
             # Latest offer per (source, url) only; older rows are price history.
@@ -161,11 +169,29 @@ class Store:
                 brand=row["brand"], category=Category(row["category"]),
                 specs=json.loads(row["specs"]), offers=offers, rating=row["rating"],
                 review_count=row["review_count"], image=row["image"], gtin=row["gtin"],
+                key=row["key"], updated_at=row["updated_at"],
             )))
         return out
 
+    def product(self, key: str) -> Product | None:
+        found = self.products(key=key)
+        return found[0] if found else None
+
+    def spec_sources(self, key: str) -> dict[str, str]:
+        row = self.db.execute("SELECT spec_sources FROM products WHERE key = ?", (key,)).fetchone()
+        return json.loads(row["spec_sources"]) if row else {}
+
+    def stats(self) -> dict:
+        by_cat = {r["category"]: r["n"] for r in self.db.execute(
+            "SELECT category, COUNT(*) AS n FROM products GROUP BY category")}
+        offers = self.db.execute("SELECT COUNT(*) AS n, MAX(scraped_at) AS last FROM offers").fetchone()
+        sources = [r["source"] for r in self.db.execute("SELECT DISTINCT source FROM offers ORDER BY source")]
+        return {"products": sum(by_cat.values()), "by_category": by_cat, "offers": offers["n"],
+                "last_scraped": offers["last"], "sources": sources}
+
     def price_history(self, key: str) -> list[sqlite3.Row]:
         return self.db.execute(
-            "SELECT source, price, currency, scraped_at FROM offers WHERE product_key = ? ORDER BY scraped_at",
+            """SELECT source, url, variant, region, price, currency, scraped_at FROM offers
+               WHERE product_key = ? ORDER BY scraped_at""",
             (key,),
         ).fetchall()

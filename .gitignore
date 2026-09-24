@@ -5,3 +5,6 @@ venv/
 *.db
 .pytest_cache/
 .devicescout_detect.json
+/build/
+/dist/
+web/node_modules/

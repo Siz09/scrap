@@ -4,16 +4,28 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "devicescout"
-version = "0.1.0"
-description = "Multi-source electronics scraper (Scrapling) that normalizes specs and ranks devices by buyer preference."
+version = "0.2.0"
+description = "Find the right phone, laptop or gadget in Nepal: scrapes Nepali stores and spec/review sites, then recommends devices for your needs and budget."
+readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["scrapling[fetchers]>=0.4"]
+license = { text = "MIT" }
+dependencies = [
+    "scrapling[fetchers]>=0.4",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "httpx>=0.27", "pyinstaller>=6.10"]
 
 [project.scripts]
 devicescout = "devicescout.cli:main"
 
+[project.gui-scripts]
+devicescout-app = "devicescout.app:main"
+
 [tool.setuptools.packages.find]
 include = ["devicescout*"]
+
+[tool.setuptools.package-data]
+devicescout = ["data/*.json", "web/dist/*", "web/dist/**/*"]

@@ -91,6 +91,8 @@ class Product:
     review_count: int | None = None
     image: str | None = None
     gtin: str | None = None            # barcode (EAN/UPC) when a store exposes it
+    key: str | None = None             # storage key (set when loaded from the database)
+    updated_at: str | None = None
 
     def local_offers(self, in_stock_only: bool = False) -> list[Offer]:
         return [o for o in self.offers

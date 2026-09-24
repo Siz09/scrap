@@ -8,6 +8,7 @@
   devicescout advise --category phone --budget 30k-60k --use photography:2,battery --os android --need 5g
   devicescout parse-file page.html --url https://... --source gsmarena
   devicescout export --format csv --out devices.csv
+  devicescout serve                         # the web app
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import argparse
 import csv
 import json
 import logging
+import os
 import sys
 
 from scrapling.parser import Selector
@@ -23,8 +25,10 @@ from scrapling.parser import Selector
 from .advisor import Advice, Needs, Pick, advise
 from .models import Category
 from .scoring import PROFILES
-from .sources import Fetcher, GenericSource, GSMArenaSource, SiteConfig, build, load_entries
-from .sources.detect import cached_platform, detect, remember
+from .jobs import run_check, run_scrape
+from .paths import default_db, sources_path
+from .sources import Fetcher, GenericSource, GSMArenaSource, SiteConfig, load_entries
+from .sources.detect import cached_platform
 from .storage import Store
 
 MUST_FLAGS = {  # cli flag -> (spec key, op, cast)
@@ -59,68 +63,19 @@ def cmd_sources(args) -> None:
               f"{(e.get('notes') or '')[:70]}")
 
 
-def _crawl(entry: dict, fetcher: Fetcher, limit: int):
-    source = build(entry, fetcher)
-    if entry.get("type") == "gsmarena":
-        per_brand = max(1, limit // max(1, len(entry.get("brands", ["samsung"]))))
-        for brand in entry.get("brands", ["samsung"]):
-            yield from source.crawl(fetcher, limit=per_brand, brand=brand, pages=entry.get("pages", 1))
-    else:
-        yield from source.crawl(fetcher, limit=limit)
-
-
 def cmd_check(args) -> None:
     """Detect platform and pull a few products from each source; report what works."""
-    rows = []
-    with Fetcher(delay=args.delay) as fetcher:
-        for e in _entries(args):
-            status, detail = "FAIL", ""
-            try:
-                if e.get("type", "auto") == "auto":
-                    report = detect(fetcher, e["base_url"])
-                    remember(e["name"], report)
-                    detail = f"{report['platform']}: {report['evidence']}"
-                sample = []
-                for p in _crawl(e, fetcher, limit=args.sample):
-                    sample.append(p)
-                    if len(sample) >= args.sample:
-                        break
-                if sample:
-                    priced = sum(1 for p in sample if p.offers and p.offers[0].price)
-                    specd = sum(1 for p in sample if p.specs)
-                    status = "OK"
-                    detail += f" | {len(sample)} products, {priced} priced, {specd} with specs; e.g. {sample[0].name[:40]!r}"
-                else:
-                    detail += " | no products extracted"
-            except Exception as ex:
-                detail += f" | {type(ex).__name__}: {str(ex)[:120]}"
-            rows.append((e["name"], status, detail))
-            print(f"{e['name']:<15} {status:<5} {detail}", flush=True)
-    ok = sum(1 for r in rows if r[1] == "OK")
+    rows = run_check(_entries(args), sample=args.sample, delay=args.delay, fetcher_factory=Fetcher)
+    ok = sum(1 for r in rows if r["status"] == "OK")
     print(f"\n{ok}/{len(rows)} sources working. Fix FAILs in {args.sources} (selectors, url_include, fetch_mode).")
 
 
 def cmd_scrape(args) -> None:
     if not args.names and not args.all:
         sys.exit("name one or more sources, or pass --all (see `devicescout sources`)")
-    store = Store(args.db)
-    total = 0
-    with Fetcher(mode=args.mode or "static", delay=args.delay,
-                 respect_robots=not args.ignore_robots) as fetcher:
-        for e in _entries(args):
-            n = 0
-            try:
-                for product in _crawl(e, fetcher, args.limit):
-                    store.upsert(product)
-                    n += 1
-                    if args.verbose:
-                        print(f"  [{product.category.value:>10}] {product.name}")
-            except Exception as ex:
-                print(f"{e['name']}: stopped after {n} products ({type(ex).__name__}: {ex})")
-                continue
-            total += n
-            print(f"{e['name']}: {n} products")
-    print(f"saved {total} products to {args.db}")
+    counts = run_scrape(_entries(args), args.db, limit=args.limit, delay=args.delay, mode=args.mode or "static",
+                        respect_robots=not args.ignore_robots, fetcher_factory=Fetcher, verbose=args.verbose)
+    print(f"saved {sum(counts.values())} products to {args.db}")
 
 
 def cmd_parse_file(args) -> None:
@@ -233,7 +188,7 @@ def _print_advice(a: Advice) -> None:
     print(f"\nBest {n.category.value.replace('_', ' ')}s for {uses}, {budget}"
           + (f", {'/'.join(n.os)}" if n.os else ""))
     skipped = ", ".join(f"{v} {k.replace('_', ' ')}" for k, v in a.excluded.items() if v and k != "wrong_category")
-    print(f"compared {a.considered} devices" + (f" (skipped: {skipped})" if skipped else "") + "\n")
+    print(f"compared {a.considered} device{'s' if a.considered != 1 else ''}" + (f" (skipped: {skipped})" if skipped else "") + "\n")
     if not a.picks:
         print("Nothing matches. Try a higher budget, fewer must-haves, or scrape more sources.")
     for i, p in enumerate(a.picks, 1):
@@ -258,6 +213,12 @@ def cmd_advise(args) -> None:
         _print_advice(advice)
 
 
+def cmd_serve(args) -> None:
+    from .server import serve
+    serve(host=args.host, port=args.port, db=args.db, sources=args.sources, open_browser=not args.no_browser,
+          read_only=args.read_only, sample=args.sample)
+
+
 def cmd_export(args) -> None:
     category = Category(args.category) if args.category else None
     rows = [p.to_dict() for p in Store(args.db).products(category)]
@@ -277,8 +238,8 @@ def cmd_export(args) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="devicescout")
-    ap.add_argument("--db", default="devicescout.db")
-    ap.add_argument("--sources", default="sources.json", help="source registry file")
+    ap.add_argument("--db", help=f"database file (default: {default_db()})")
+    ap.add_argument("--sources", help=f"source registry (default: {sources_path()})")
     ap.add_argument("-v", "--verbose", action="store_true")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -324,16 +285,36 @@ def main(argv: list[str] | None = None) -> None:
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_advise)
 
+    s = sub.add_parser("serve", help="start the web app (opens your browser)")
+    s.add_argument("--host", default="127.0.0.1")
+    s.add_argument("--port", type=int, default=8765)
+    s.add_argument("--no-browser", action="store_true")
+    s.add_argument("--read-only", action="store_true",
+                   help="disable scraping from the UI (use when hosting for the public)")
+    s.add_argument("--sample", action="store_true",
+                   help="use a built-in sample catalogue of fictional devices (to try the app)")
+    s.set_defaults(func=cmd_serve)
+
     s = sub.add_parser("export", help="dump the catalogue as CSV or JSON")
     s.add_argument("--format", choices=["csv", "json"], default="csv")
     s.add_argument("--category", choices=[c.value for c in Category])
     s.add_argument("--out")
     s.set_defaults(func=cmd_export)
 
+    # Windows consoles may not encode every character in store names; never crash on output.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     args = ap.parse_args(argv)
+    args.db = args.db or str(default_db())
+    args.sources = args.sources or str(sources_path())
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING,
                         format="%(levelname)s %(name)s: %(message)s")
-    args.func(args)
+    try:
+        args.func(args)
+    except BrokenPipeError:  # output piped into `head` etc.
+        os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
+        sys.exit(0)
 
 
 if __name__ == "__main__":

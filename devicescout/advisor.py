@@ -154,10 +154,12 @@ def _check_must(p: Product, key: str, op: str, want) -> bool | None:
     return have == want
 
 
-def _explain(r: Ranked, needs: Needs, unverified: list[str], pool_size: int) -> tuple[list[str], list[str], list[str]]:
+def _explain(r: Ranked, needs: Needs, unverified: list[str], pool_size: int,
+             importance: dict[str, float]) -> tuple[list[str], list[str], list[str]]:
     p = r.product
     strengths, weaknesses, warnings = [], [], []
-    for key, pct in sorted(r.breakdown.items(), key=lambda kv: -(kv[1] or 0)):
+    # What the buyer weighted most comes first, so a photography buyer reads about the camera.
+    for key, pct in sorted(r.breakdown.items(), key=lambda kv: -importance.get(kv[0], 0)):
         if pct is None or key not in LABELS or pool_size < 2:
             continue
         label, fmt = LABELS[key]
@@ -177,14 +179,15 @@ def _explain(r: Ranked, needs: Needs, unverified: list[str], pool_size: int) -> 
         warnings.append(f"limited spec data ({r.coverage:.0%} of what matters for you); treat the score as rough")
     flagged = [o for o in p.offers if o.suspicious]
     if flagged:
-        warnings.append(f"{len(flagged)} listing(s) ignored as implausibly cheap (possible clone, used, or mislisted)")
+        n = len(flagged)
+        warnings.append(f"{n} listing{'s' if n > 1 else ''} ignored as implausibly cheap (possible clone, used, or mislisted)")
     local = p.local_offers(needs.in_stock_only)
     if local and not any(o.official for o in local):
         warnings.append("no seller confirmed as official/authorised: check warranty before paying")
     ref, best = p.reference_price_npr, p.best_price
     if ref and best and best > ref * 1.3:
         warnings.append(f"Nepal price is {best / ref - 1:.0%} above the international reference (before import costs)")
-    return strengths[:4], weaknesses[:3], warnings
+    return strengths[:3], weaknesses[:2], warnings
 
 
 def _where(p: Product, needs: Needs) -> list[dict]:
@@ -261,8 +264,12 @@ def advise(products: list[Product], needs: Needs) -> Advice:
     def price_of(r: Ranked) -> float:
         return _local_price(r.product, needs)
 
+    importance: dict[str, float] = {}
+    for key, w, _ in weights:
+        importance[key] = importance.get(key, 0) + w
+
     def pick(r: Ranked, pool_size: int) -> Pick:
-        s, w, warn = _explain(r, needs, unverified[id(r.product)], pool_size)
+        s, w, warn = _explain(r, needs, unverified[id(r.product)], pool_size, importance)
         return Pick(r, price_of(r), s, w, warn, _where(r.product, needs))
 
     # Picks are scored only against devices the buyer can afford, so "top-tier X for this
