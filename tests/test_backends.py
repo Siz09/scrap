@@ -97,3 +97,17 @@ def test_block_reason():
     assert block_reason(FetchedPage(PRODUCT_HTML, "u", 200, "t")) is None
     assert block_reason(FetchedPage(b"<html></html>", "u", 200, "t")) == "near-empty page"
     assert block_reason(FetchedPage(b"[1,2]", "u", 200, "t"), want_json=True) is None
+
+
+def test_asking_for_a_browser_gets_a_browser_even_after_http_worked():
+    """hukut.com: plain HTTP 'works' (200, an empty shell), so it becomes the site's remembered
+    scraper; a later explicit browser request must still go to a browser."""
+    http = Scripted("scrapling-http", [(200, PRODUCT_HTML)])
+    chrome = Scripted("scrapling-dynamic", [(200, PRODUCT_HTML)], browser=True)
+    f = fetcher(http, chrome)
+    f.get("https://hukut.com/mobile-phones")
+    assert (http.calls, chrome.calls) == (1, 0)
+    f.get("https://hukut.com/mobile-phones", mode="dynamic")
+    assert (http.calls, chrome.calls) == (1, 1)
+    f.get("https://hukut.com/some-phone-12gb")        # plain requests still use the fast scraper
+    assert (http.calls, chrome.calls) == (2, 1)

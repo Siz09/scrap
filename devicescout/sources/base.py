@@ -105,7 +105,14 @@ class Fetcher:
     def _chain(self, host: str, mode: str, want_json: bool) -> list:
         chain = [b for b in self.backends if b.name not in self._broken]
         start = {"dynamic": "scrapling-dynamic", "stealth": "scrapling-stealth"}.get(mode)
-        first = self._preferred.get(host) or start
+        if start:
+            # A browser was asked for (e.g. the plain HTML had no products): browsers first, even
+            # if plain HTTP "worked" on this site before; HTTP only if no browser can run.
+            preferred = self._preferred.get(host)
+            first = preferred if preferred in {b.name for b in chain if b.browser} else start
+            chain.sort(key=lambda b: (not b.browser, b.name != first))
+            return chain
+        first = self._preferred.get(host)
         if first:
             chain.sort(key=lambda b: b.name != first)
         return chain
@@ -154,7 +161,10 @@ class Fetcher:
             if getattr(page, "status", 200) >= 400:
                 raise RuntimeError(f"HTTP {page.status} for {url}")
             self._count(backend.name, "ok")
-            if self._preferred.get(host) != backend.name:
+            # Remember the winner for plain requests; a browser asked for explicitly shouldn't
+            # make every later request on the site go through a (slow) browser.
+            forced = backend.browser and mode in ("dynamic", "stealth") and self.mode == "static"
+            if not forced and self._preferred.get(host) != backend.name:
                 if reasons:
                     log.info("%s: %s got through after %s", host, backend.name, "; ".join(reasons))
                 self._preferred[host] = backend.name

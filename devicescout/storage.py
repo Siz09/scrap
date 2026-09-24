@@ -157,10 +157,19 @@ class Store:
         self.db.execute("PRAGMA synchronous = NORMAL")
         self.db.executescript(SCHEMA)
         cols = {r["name"] for r in self.db.execute("PRAGMA table_info(products)")}
-        if "spec_candidates" not in cols:  # databases created before 0.3
-            self.db.execute("ALTER TABLE products ADD COLUMN spec_candidates TEXT NOT NULL DEFAULT '{}'")
+        # Databases created by older versions. Two threads may open a new file at once, so a
+        # column the other one just added is fine.
+        migrations = []
+        if "spec_candidates" not in cols:
+            migrations.append("ALTER TABLE products ADD COLUMN spec_candidates TEXT NOT NULL DEFAULT '{}'")
         if "valid_until" not in {r["name"] for r in self.db.execute("PRAGMA table_info(offers)")}:
-            self.db.execute("ALTER TABLE offers ADD COLUMN valid_until TEXT")
+            migrations.append("ALTER TABLE offers ADD COLUMN valid_until TEXT")
+        for sql in migrations:
+            try:
+                self.db.execute(sql)
+            except sqlite3.OperationalError as e:
+                if "duplicate column" not in str(e):
+                    raise
         self.db.commit()
 
     def close(self) -> None:

@@ -188,13 +188,19 @@ def execute(job: dict, db_path, sources_path, fetcher_factory=Fetcher) -> str:
     store = open_store(db_path)
     cancel = threading.Event()
 
+    def alive() -> None:
+        # Long jobs (a whole-site scrape takes hours): keep telling the website the scraper is up.
+        store.set_kv("worker_heartbeat", _now())
+
     def log(line: str) -> None:
         if store.job(job["id"])["cancel_requested"]:
             cancel.set()
         store.job_log(job["id"], f"{time.strftime('%H:%M:%S')} {line}")
+        alive()
 
     def progress(**p) -> None:
         store.job_progress(job["id"], **p)
+        alive()
 
     status = "done"
     try:

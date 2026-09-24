@@ -310,6 +310,16 @@ def cmd_schedule(args) -> None:
             say(f"{job['kind']} job {job['id']} {status}")
             heartbeat()
 
+    def keep_alive() -> None:
+        # Own connection: a job can hold the main one busy for minutes (browser pages).
+        beat = open_store(args.db)
+        while not stop.wait(30):
+            try:
+                beat.set_kv("worker_heartbeat", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+            except Exception:
+                pass
+    threading.Thread(target=keep_alive, daemon=True, name="heartbeat").start()
+
     from .sources.backends import describe
     store.set_kv("worker_scrapers", json.dumps(describe()))   # what *this* container can run, for the website
     heartbeat()
@@ -377,6 +387,50 @@ def cmd_quality(args) -> None:
     print("issues: " + (", ".join(f"{v} {k}" for k, v in q["by_kind"].items()) or "none"))
     for r in q["top"]:
         print(f"  {r['n']:>5}  {r['source']:<15} {r['kind']:<13} {r['field']:<16} e.g. {r['example'][:70]}")
+
+
+def cmd_inspect(args) -> None:
+    """What a page looks like to the scraper, plain and in a browser: for fixing a failing source."""
+    import re as _re
+    from urllib.parse import urlparse
+
+    from .sources.generic import GenericSource, SiteConfig, _embedded_json, jsonld_objects
+
+    host = urlparse(args.url).netloc
+    src = GenericSource(SiteConfig(name="inspect", base_url=f"{urlparse(args.url).scheme}://{host}"))
+    with Fetcher(delay=0.5) as f:
+        for mode in ("static", "dynamic"):
+            print(f"\n=== {mode} ({'plain HTTP' if mode == 'static' else 'browser, scrolled'}) ===")
+            try:
+                page = f.get(args.url, mode=mode, scroll=mode == "dynamic", fallback=mode == "static")
+            except Exception as e:
+                print(f"failed: {type(e).__name__}: {str(e)[:200]}")
+                continue
+            body = page.body if isinstance(page.body, str) else bytes(page.body).decode("utf-8", "replace")
+            text = " ".join((page.css("body").first.get_all_text(separator=" ") if page.css("body") else "").split())
+            links = src._links(page, host)
+            emb = src._embedded_links(page, host)
+            products = [u for u in dict.fromkeys(links + emb) if src._looks_like_product(u)]
+            others = [u for u in links if u not in products]
+            print(f"scraper: {f.summary()}   status: {getattr(page, 'status', '?')}   html: {len(body):,} chars"
+                  f"   visible text: {len(text):,} chars")
+            print(f"title: {(page.css('title::text').get() or '').strip()[:100]!r}")
+            print(f"links on this site: {len(links)}   from page data: {len(emb)}   look like products: {len(products)}")
+            for u in products[:args.show]:
+                print(f"  product? {u}")
+            for u in others[:args.show]:
+                print(f"  other    {u}")
+            ld = [str(o.get("@type")) for o in jsonld_objects(page)]
+            print(f"JSON-LD types: {ld or 'none'}")
+            blobs = _embedded_json(page)
+            print(f"embedded page data: {len(blobs)} blob(s)"
+                  + (f", top keys: {list(blobs[0])[:12]}" if blobs and isinstance(blobs[0], dict) else ""))
+            prices = _re.findall(r"(?:Rs\.?|NPR|रु)\s?[\d,]{3,}", text)
+            print(f"prices visible: {len(prices)}  e.g. {prices[:5]}")
+            clickable = len(page.css("[onclick], [data-href], [data-url]"))
+            if clickable:
+                print(f"elements navigating by script (onclick/data-href): {clickable}")
+            f.stats.clear()
 
 
 def cmd_scrapers(args) -> None:
@@ -526,6 +580,11 @@ def main(argv: list[str] | None = None) -> None:
 
     s = sub.add_parser("reprocess", help="rebuild the catalogue from stored raw records (after parser updates)")
     s.set_defaults(func=cmd_reprocess)
+
+    s = sub.add_parser("inspect", help="show what a page looks like to the scraper (plain and in a browser)")
+    s.add_argument("url")
+    s.add_argument("--show", type=int, default=8, help="example links to print")
+    s.set_defaults(func=cmd_inspect)
 
     s = sub.add_parser("raw", help="what the raw layer holds per website (pages fetched, records parsed)")
     s.set_defaults(func=cmd_raw)
