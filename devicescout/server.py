@@ -196,15 +196,22 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
                 items = sorted((p for p in items if p.key in rank), key=lambda p: rank[p.key])
         finally:
             s.close()
-        if priced_only or min_price is not None or max_price is not None:
-            items = [p for p in items if p.best_price is not None
-                     and (min_price is None or p.best_price >= min_price)
-                     and (max_price is None or p.best_price <= max_price)]
+        def price(p: Product) -> float | None:
+            """Nepali price, else the price abroad converted to NPR (not sold here yet)."""
+            if p.best_price is not None:
+                return p.best_price
+            conv = p.converted_offer
+            return conv.price_npr if conv else None
+
+        if min_price is not None or max_price is not None:
+            items = [p for p in items if (v := price(p)) is not None
+                     and (min_price is None or v >= min_price) and (max_price is None or v <= max_price)]
+        # priced_only (sorting by price): devices with no price anywhere go last, not away.
         keys = {
             "relevance": lambda p: 0,   # keep search order
             "name": lambda p: p.name.lower(),
-            "price": lambda p: (p.best_price is None, p.best_price or 0),
-            "-price": lambda p: (p.best_price is None, -(p.best_price or 0)),
+            "price": lambda p: (price(p) is None, price(p) or 0),
+            "-price": lambda p: (price(p) is None, -(price(p) or 0)),
             "rating": lambda p: -(p.rating or 0),
         }
         items.sort(key=keys[sort])
@@ -235,6 +242,26 @@ def create_app(db: str | Path, sources: str | Path, read_only: bool = False, sam
         )
         return {**summary(p), "offers": offers, "history": history, "spec_sources": spec_sources,
                 "gtin": p.gtin, "updated_at": p.updated_at}
+
+    @app.get("/api/images/{key:path}", include_in_schema=False)
+    def get_image(key: str):
+        """The device's photo (downloaded once, then served from the data folder), or a drawn
+        placeholder when no site has one: every device shows an image."""
+        from fastapi.responses import Response
+
+        from .images import image_file, placeholder_svg
+        s = store()
+        try:
+            p = s.product(key)
+            if not p:
+                raise HTTPException(404, "not found")
+            path = image_file(p, remember=lambda url: s.set_image(key, url))
+        finally:
+            s.close()
+        if path:
+            return FileResponse(path, headers={"Cache-Control": "public, max-age=604800"})
+        return Response(placeholder_svg(p), media_type="image/svg+xml",
+                        headers={"Cache-Control": "public, max-age=3600"})
 
     @app.get("/api/deals")
     def get_deals(category: Category | None = None, verified_only: bool = True,

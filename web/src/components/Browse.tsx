@@ -3,6 +3,7 @@ import { api, type Summary } from "../api";
 import { useApp } from "../context";
 import { chipKeys, chipSpec, parseAmount } from "../format";
 import PriceTag from "./PriceTag";
+import DeviceImage from "./DeviceImage";
 
 const PAGE = 40;
 
@@ -83,6 +84,9 @@ export default function Browse() {
           const inCompare = compare.includes(p.key);
           return (
             <article key={p.key} className="card tile">
+              <a href={`#/product/${encodeURIComponent(p.key)}`} className="tile-img" tabIndex={-1} aria-hidden="true">
+                <DeviceImage productKey={p.key} name={p.name} size="md" />
+              </a>
               <h3><a href={`#/product/${encodeURIComponent(p.key)}`}>{p.name}</a></h3>
               <div className="tile-price">
                 <PriceTag local={p.best_price} converted={p.converted_price} from={p.converted_from}

@@ -425,6 +425,11 @@ class Store:
         found = self.products(key=key)
         return found[0] if found else None
 
+    def set_image(self, key: str, url: str) -> None:
+        """An image found later (e.g. the page's og:image) for a product that had none."""
+        self.db.execute("UPDATE products SET image = ? WHERE key = ?", (url, key))
+        self.db.commit()
+
     def spec_sources(self, key: str) -> dict[str, str]:
         row = self.db.execute("SELECT spec_sources FROM products WHERE key = ?", (key,)).fetchone()
         return json.loads(row["spec_sources"]) if row else {}

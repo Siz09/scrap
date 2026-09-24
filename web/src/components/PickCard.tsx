@@ -2,6 +2,7 @@ import type { Pick } from "../api";
 import { useApp } from "../context";
 import { formatSpec, keySpecs, npr } from "../format";
 import PriceTag, { money } from "./PriceTag";
+import DeviceImage from "./DeviceImage";
 
 function confidenceLabel(c: number): [string, string] {
   if (c >= 0.75) return ["High", "good"];
@@ -25,6 +26,9 @@ export default function PickCard({ pick, rank, tone, savings }: {
     <article className={`card pick ${tone ?? ""}`}>
       <div className="pick-head">
         {rank && <span className="pick-rank" aria-label={`Rank ${rank}`}>{rank}</span>}
+        <a href={`#/product/${encodeURIComponent(pick.key)}`} className="pick-img" tabIndex={-1} aria-hidden="true">
+          <DeviceImage productKey={pick.key} name={pick.name} size="sm" />
+        </a>
         <div className="pick-title">
           <h3><a href={`#/product/${encodeURIComponent(pick.key)}`}>{pick.name}</a></h3>
           <div className="pick-price">

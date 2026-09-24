@@ -40,6 +40,12 @@ def sample_db() -> Path:
     return data_dir() / "sample.db"
 
 
+def images_dir() -> Path:
+    d = data_dir() / "images"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def detect_cache() -> Path:
     return data_dir() / "detected_platforms.json"
 

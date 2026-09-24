@@ -194,3 +194,11 @@ def test_device_sold_only_abroad_is_shown_with_a_converted_price(client):
     picks = client.post("/api/advise", json={"category": "phone", "uses": {"balanced": 1}, "top": 20,
                                              "nepal_only": True}).json()["picks"]
     assert not any(p["name"] == "Himal Fold 2" for p in picks)
+
+
+def test_sorting_by_price_keeps_devices_sold_only_abroad(client):
+    r = client.get("/api/products", params={"category": "phone", "sort": "price", "priced_only": "true"}).json()
+    names = [p["name"] for p in r["items"]]
+    assert "Himal Fold 2" in names and r["total"] == 9          # every phone, the import at its converted price
+    prices = [p["best_price"] or p["converted_price"] for p in r["items"]]
+    assert prices == sorted(prices)

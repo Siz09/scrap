@@ -694,6 +694,12 @@ class GenericSource(Source):
             image = image[0] if image else None
         if isinstance(image, dict):
             image = image.get("url")
+        if not isinstance(image, str) or not image:
+            # The image the page publishes for sharing (almost every store page has one).
+            image = (page.css("meta[property='og:image']::attr(content)").get()
+                     or page.css("meta[name='twitter:image']::attr(content)").get())
+        if isinstance(image, str) and image:
+            image = page.urljoin(image)
 
         offers = []
         if price is not None:

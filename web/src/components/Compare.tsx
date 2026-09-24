@@ -3,6 +3,7 @@ import { api, type ProductDetail } from "../api";
 import { useApp } from "../context";
 import { formatSpec, LOWER_IS_BETTER, NO_BEST } from "../format";
 import PriceTag from "./PriceTag";
+import DeviceImage from "./DeviceImage";
 
 export default function Compare() {
   const { meta, compare, toggleCompare } = useApp();
@@ -48,6 +49,7 @@ export default function Compare() {
               <th scope="col"><span className="sr-only">Spec</span></th>
               {items.map((p) => (
                 <th key={p.key} scope="col">
+                  <DeviceImage productKey={p.key} name={p.name} size="sm" />
                   <a href={`#/product/${encodeURIComponent(p.key)}`}>{p.name}</a>
                   <button type="button" className="link small" onClick={() => toggleCompare(p.key)}>Remove</button>
                 </th>
