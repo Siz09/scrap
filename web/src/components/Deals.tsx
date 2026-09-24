@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type DealItem } from "../api";
 import { useApp } from "../context";
+import { useStored } from "../stored";
 import { chipKeys, chipSpec, npr, parseAmount } from "../format";
 
 // How each verdict is shown. Good news in green, warnings in red, the rest neutral.
@@ -21,9 +22,9 @@ function daysLeft(iso: string): string {
 
 export default function Deals() {
   const { meta, compare, toggleCompare } = useApp();
-  const [category, setCategory] = useState("");
-  const [maxText, setMaxText] = useState("");
-  const [verifiedOnly, setVerifiedOnly] = useState(true);
+  const [category, setCategory] = useStored("deals.category", "");
+  const [maxText, setMaxText] = useStored("deals.maxText", "");
+  const [verifiedOnly, setVerifiedOnly] = useStored("deals.verifiedOnly", true);
   const [items, setItems] = useState<DealItem[] | null>(null);
 
   useEffect(() => {

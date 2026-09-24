@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, type Summary } from "../api";
 import { useApp } from "../context";
+import { useStored } from "../stored";
 import { chipKeys, chipSpec, parseAmount } from "../format";
 import PriceTag from "./PriceTag";
 import DeviceImage from "./DeviceImage";
@@ -9,11 +10,11 @@ const PAGE = 40;
 
 export default function Browse() {
   const { meta, compare, toggleCompare } = useApp();
-  const [category, setCategory] = useState("phone");
-  const [q, setQ] = useState("");
-  const [minText, setMinText] = useState("");
-  const [maxText, setMaxText] = useState("");
-  const [sort, setSort] = useState("price");
+  const [category, setCategory] = useStored("browse.category", "phone");
+  const [q, setQ] = useStored("browse.q", "");
+  const [minText, setMinText] = useStored("browse.minText", "");
+  const [maxText, setMaxText] = useStored("browse.maxText", "");
+  const [sort, setSort] = useStored("browse.sort", "price");
   const [items, setItems] = useState<Summary[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);

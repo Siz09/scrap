@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, type Advice, type Must, type MustInfo, type Parsed } from "../api";
 import { useApp } from "../context";
+import { useStored } from "../stored";
 import { npr, nprShort, osName, parseAmount } from "../format";
 import PickCard from "./PickCard";
 
@@ -21,21 +22,21 @@ const EXCLUDED_LABELS: Record<string, string> = {
 export default function Advisor() {
   const { meta } = useApp();
   const categories = meta.categories.filter((c) => c.uses.length > 0);
-  const [category, setCategory] = useState("phone");
+  const [category, setCategory] = useStored("advisor.category", "phone");
   const cat = categories.find((c) => c.id === category) ?? categories[0];
 
-  const [minText, setMinText] = useState("");
-  const [maxText, setMaxText] = useState("60k");
-  const [uses, setUses] = useState<string[]>([]);
-  const [os, setOs] = useState<string[]>([]);
-  const [musts, setMusts] = useState<MustState>({});
-  const [officialOnly, setOfficialOnly] = useState(false);
-  const [brands, setBrands] = useState<string[]>([]);
-  const [excludeBrands, setExcludeBrands] = useState<string[]>([]);
-  const [query, setQuery] = useState("");
-  const [understood, setUnderstood] = useState<string[] | null>(null);
-  const [inStock, setInStock] = useState(false);
-  const [nepalOnly, setNepalOnly] = useState(false);
+  const [minText, setMinText] = useStored("advisor.minText", "");
+  const [maxText, setMaxText] = useStored("advisor.maxText", "60k");
+  const [uses, setUses] = useStored<string[]>("advisor.uses", []);
+  const [os, setOs] = useStored<string[]>("advisor.os", []);
+  const [musts, setMusts] = useStored<MustState>("advisor.musts", {});
+  const [officialOnly, setOfficialOnly] = useStored("advisor.officialOnly", false);
+  const [brands, setBrands] = useStored<string[]>("advisor.brands", []);
+  const [excludeBrands, setExcludeBrands] = useStored<string[]>("advisor.excludeBrands", []);
+  const [query, setQuery] = useStored("advisor.query", "");
+  const [understood, setUnderstood] = useStored<string[] | null>("advisor.understood", null);
+  const [inStock, setInStock] = useStored("advisor.inStock", false);
+  const [nepalOnly, setNepalOnly] = useStored("advisor.nepalOnly", false);
   const [moreShown, setMoreShown] = useState(20);   // matches beyond the top 5, shown 20 at a time
 
   const [advice, setAdvice] = useState<Advice | null>(null);
@@ -77,6 +78,18 @@ export default function Advisor() {
     setBrands(p.brands);
     setExcludeBrands(p.exclude_brands);
     setUnderstood(p.understood);
+  }
+
+  // Choices are remembered between visits; this puts the form back to how it starts.
+  function startOver() {
+    setQuery("");
+    setUnderstood(null);
+    setBrands([]);
+    setExcludeBrands([]);
+    setOfficialOnly(false);
+    setInStock(false);
+    setNepalOnly(false);
+    pickCategory("phone");
   }
 
   function toggleUse(id: string) {
@@ -130,6 +143,7 @@ export default function Advisor() {
           <input id="ask-input" type="search" value={query} onChange={(e) => setQuery(e.target.value)}
                  placeholder='e.g. "photography phone under 1.2 lakh"' />
           <button type="submit" className="btn primary">Ask</button>
+          <button type="button" className="btn" onClick={startOver}>Start over</button>
         </form>
         {understood ? (
           <div className="understood" aria-live="polite">
