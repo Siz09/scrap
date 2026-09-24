@@ -70,8 +70,8 @@ def test_div_spec_sheet_is_read_and_variant_prices_are_not_specs():
       <div class="row"><p>Charging:</p><p>80W SUPERVOOC</p></div>
     </div></body></html>"""
     p = GenericSource(SiteConfig(name="s", region="np")).parse(Selector(html, url="https://s/oneplus-15r"))
-    assert p.raw_specs["Screen Size"] == "6.83 inches"
-    assert p.raw_specs["Charging"] == "80W SUPERVOOC"
+    assert p.raw_specs["Display / Screen Size"] == "6.83 inches"
+    assert p.raw_specs["Battery / Charging"] == "80W SUPERVOOC"
     assert "12/256GB" not in p.raw_specs
     assert p.specs["battery_mah"] == 7400
 
@@ -95,3 +95,19 @@ def test_price_in_plain_html_but_specs_only_in_browser_renders_the_page():
     assert len(p.raw_specs) == 8 and f.modes == ["static", "dynamic"]
     src._product(f, "https://s/y-phone")
     assert src.fetch_mode == "dynamic"      # two wins: the rest go straight to the browser
+
+
+def test_div_spec_rows_keep_sections_apart_and_skip_pairs_of_rows():
+    # hukut's layout: labels such as "Type" repeat per section; a wrapper holding two rows
+    # side by side must not become "Type Li-Ion 7400 mAh" = "Charging 80W wired".
+    row = '<div class="grid"><div class="text-sm">{}</div><div class="col-span-2">{}</div></div>'
+    html = ('<html><body><h1>P</h1><script type="application/ld+json">{"@type":"Product","name":"P",'
+            '"offers":{"price":"1000","priceCurrency":"NPR"}}</script><div id="specification">'
+            '<h2>Product Specification</h2>'
+            '<div><h3>DISPLAY</h3><div>' + row.format("Type", "AMOLED, 120Hz") + '</div></div>'
+            '<div><h3>BATTERY</h3><div>' + row.format("Type", "Li-Ion 7400 mAh")
+            + row.format("Charging", "80W wired") + '</div></div></div></body></html>')
+    p = GenericSource(SiteConfig(name="s", region="np")).parse(Selector(html, url="https://s/p"))
+    assert p.raw_specs == {"Display / Type": "AMOLED, 120Hz", "Battery / Type": "Li-Ion 7400 mAh",
+                           "Battery / Charging": "80W wired"}
+    assert p.specs["battery_mah"] == 7400 and p.specs["charging_w"] == 80

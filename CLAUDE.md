@@ -120,21 +120,18 @@ og:image from the product's page, then to an SVG placeholder.
 
 ## Open / unverified (latest first)
 
-1. **Hukut specs (commit 02e8b5a, NOT yet verified on the real site).**
-   - Found with `inspect https://hukut.com/oneplus-15r`:
-     - The plain HTML has 0 specs, only 809 characters of visible text.
-     - The browser-rendered page has about 30 elements with "spec" in their class, but the parser read none.
-     - It stored variant price rows ("12/256GB → Rs. 98,499") as "specs".
-   - Fix:
-     - A product page that is script-heavy and has fewer than 5 specs is re-rendered in the browser;
-       after 2 wins the site's product pages go straight to the browser (this makes Hukut scrapes slower).
-     - `_div_spec_rows` reads label/value pairs inside `[class*=spec]` blocks. **Its guess at Hukut's
-       markup is unconfirmed.**
-     - Values that are only a price are dropped from the specs.
-   - Next step: the owner runs `inspect` again.
-     - If "specs found" in the dynamic section is still 0–3, fix the extractor using the printed
-       "spec block markup (start)".
-     - If specs are embedded in `self.__next_f` script data, parsing that would avoid the browser (faster).
+1. **Hukut specs: verified working with `inspect` on the owner's machine; stored data not re-scraped yet.**
+   - Hukut's plain HTML has no specs. The browser-rendered page has a `<div id="specification">`
+     sheet: one `<h3>SECTION</h3>` per section, then rows of
+     `<div class="grid"><div>Label</div><div class="col-span-2">Value</div></div>`.
+   - `inspect https://hukut.com/oneplus-15r` found 39 specs in the dynamic run (16 understood).
+   - `_div_spec_rows` prefixes labels with their section, as GSMArena's are ("Battery / Type"), and skips
+     wrappers holding two rows. That fix (after the owner's run) is tested only on copied markup.
+   - Script-heavy product pages with fewer than 5 specs are re-rendered in the browser, and after 2 wins the
+     site goes straight to the browser, so Hukut scrapes are slower.
+   - Existing Hukut products only get specs after Hukut is updated again (Update on the Data sources page).
+   - Possible speed-up: the spec text may also be in the `self.__next_f` script data of the plain page;
+     unconfirmed, since only the description was seen there.
    - Check stored coverage:
      ```sql
      WITH r AS (SELECT (SELECT count(*) FROM jsonb_object_keys(payload->'raw_specs')) AS n
