@@ -442,7 +442,48 @@ def cmd_inspect(args) -> None:
             clickable = len(page.css("[onclick], [data-href], [data-url]"))
             if clickable:
                 print(f"elements navigating by script (onclick/data-href): {clickable}")
+            _inspect_specs(src, page, blobs)
             f.stats.clear()
+
+
+def _inspect_specs(src, page, blobs) -> None:
+    """What the product parser gets from this page, and where else specs might be hiding."""
+    try:
+        p = src.parse(page)
+    except Exception as e:
+        print(f"as a product: parse failed: {type(e).__name__}: {str(e)[:200]}")
+        return
+    if not p:
+        print("as a product: not a product page")
+        return
+    price = p.offers[0].price if p.offers else None
+    print(f"as a product: {p.name!r}  brand: {p.brand}  category: {p.category.value}  price: {price}"
+          f"  offers: {len(p.offers)}  image: {'yes' if p.image else 'no'}")
+    print(f"specs found on the page: {len(p.raw_specs)}   understood: {len(p.specs)}")
+    for k, v in list(p.raw_specs.items())[:40]:
+        print(f"  {k[:40]:<40} {str(v)[:80]}")
+    if p.specs:
+        print("understood as: " + ", ".join(f"{k}={v}" for k, v in list(p.specs.items())[:30]))
+    # Places the parser doesn't read yet, so a missing spec sheet can be tracked down.
+    print(f"spec-like markup: table rows {len(page.css('table tr'))}, <dl> {len(page.css('dl'))}, "
+          f"elements with 'spec' in class/id {len(page.css('[class*=spec], [id*=spec]'))}")
+    keys: set[str] = set()
+
+    def walk(node, depth=0):
+        if depth > 12:
+            return
+        if isinstance(node, dict):
+            keys.update(k for k in node if any(w in k.lower() for w in ("spec", "attribute", "feature")))
+            for v in node.values():
+                walk(v, depth + 1)
+        elif isinstance(node, list):
+            for v in node[:200]:
+                walk(v, depth + 1)
+
+    for blob in blobs:
+        walk(blob)
+    if keys:
+        print(f"spec-like keys in page data: {sorted(keys)[:15]}")
 
 
 def cmd_scrapers(args) -> None:
