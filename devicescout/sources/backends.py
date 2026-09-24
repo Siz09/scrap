@@ -72,19 +72,45 @@ def block_reason(page, want_json: bool = False) -> str | None:
     if want_json:
         stripped = head.lstrip()
         return None if stripped[:1] in ("{", "[") else "expected JSON, got HTML"
-    if len(body) < 400 and "<" in head:
-        return "near-empty page"
+    looks_html = bool(re.search(r"<(html|body|head)\b", head, re.I))
+    if looks_html and len(body) < 400:
+        return "near-empty page"      # sitemaps, JSON and robots.txt are legitimately small
     if _WALL.search(head) and len(body) < 60_000:  # real product pages are big; walls are small
         return "bot-wall page"
     return None
 
 
+_BROWSER_CACHE: dict[str, str | None] = {}
+
+
+def _browser_missing(module: str) -> str | None:
+    """None if `module` (playwright/patchright) can launch its Chromium; else why not. Cached."""
+    if module in _BROWSER_CACHE:
+        return _BROWSER_CACHE[module]
+    reason = None
+    try:
+        sync_api = __import__(f"{module}.sync_api", fromlist=["sync_playwright"])
+        with sync_api.sync_playwright() as p:
+            if not os.path.exists(p.chromium.executable_path):
+                reason = f"Chromium not installed (run: python -m {module} install chromium)"
+    except ImportError:
+        reason = f"{module} not installed"
+    except Exception as e:  # driver can't start, missing system libraries, ...
+        reason = f"{module} can't start: {str(e).splitlines()[0][:100]}"
+    _BROWSER_CACHE[module] = reason
+    return reason
+
+
 class Backend:
     name = "base"
-    browser = False  # browser backends can't return raw JSON bodies reliably
+    browser = False  # browser backends read JSON from the rendered <pre>, see Fetcher.get
+
+    def missing(self) -> str | None:
+        """Why this scraper can't run here (None = ready)."""
+        return None
 
     def available(self) -> bool:
-        return True
+        return self.missing() is None
 
     def fetch(self, url: str, headers: dict[str, str]):
         raise NotImplementedError
@@ -132,12 +158,8 @@ class ScraplingDynamic(Backend):
     name = "scrapling-dynamic"
     browser = True
 
-    def available(self):
-        try:
-            import playwright  # noqa: F401
-            return True
-        except ImportError:
-            return False
+    def missing(self):
+        return _browser_missing("playwright")
 
     def fetch(self, url, headers):
         from scrapling.fetchers import DynamicFetcher
@@ -148,12 +170,9 @@ class ScraplingStealth(Backend):
     name = "scrapling-stealth"
     browser = True
 
-    def available(self):
-        try:
-            import camoufox  # noqa: F401
-            return True
-        except ImportError:
-            return False
+    def missing(self):
+        # Scrapling's StealthyFetcher drives patchright, a patched Chromium that hides automation.
+        return _browser_missing("patchright")
 
     def fetch(self, url, headers):
         from scrapling.fetchers import StealthyFetcher
@@ -166,12 +185,12 @@ class Crawl4AI(Backend):
     name = "crawl4ai"
     browser = True
 
-    def available(self):
+    def missing(self):
         try:
             import crawl4ai  # noqa: F401
-            return True
         except ImportError:
-            return False
+            return "not installed (pip install crawl4ai)"
+        return _browser_missing("playwright")
 
     def fetch(self, url, headers):
         import asyncio
@@ -194,14 +213,14 @@ class Firecrawl(Backend):
     name = "firecrawl"
     browser = True
 
-    def available(self):
-        if not os.getenv("FIRECRAWL_API_KEY"):
-            return False
+    def missing(self):
         try:
             import firecrawl  # noqa: F401
-            return True
         except ImportError:
-            return False
+            return "not installed (pip install firecrawl-py)"
+        if not os.getenv("FIRECRAWL_API_KEY"):
+            return "needs FIRECRAWL_API_KEY (paid hosted service)"
+        return None
 
     def fetch(self, url, headers):
         from firecrawl import Firecrawl as Client
@@ -228,5 +247,25 @@ def build_backends(names: list[str] | None = None) -> list[Backend]:
 
 
 def describe() -> list[dict]:
-    return [{"name": cls.name, "available": cls().available(), "browser": cls.browser} for cls in ALL_BACKENDS]
+    out = []
+    for cls in ALL_BACKENDS:
+        missing = cls().missing()
+        out.append({"name": cls.name, "available": missing is None, "browser": cls.browser, "missing": missing})
+    return out
+
+
+def json_from_rendered(page) -> bytes | None:
+    """Browsers show a JSON response as text inside <pre>; recover the raw JSON."""
+    try:
+        text = page.css("pre::text").get() or page.css("body").first.get_all_text()
+    except Exception:
+        return None
+    text = (text or "").strip()
+    if text[:1] in ("{", "["):
+        try:
+            json.loads(text)
+            return text.encode()
+        except ValueError:
+            return None
+    return None
 

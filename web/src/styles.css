@@ -284,9 +284,16 @@ tr.suspicious td:first-child a { text-decoration: line-through; }
 .clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; max-width: 360px; }
 .row-actions { white-space: nowrap; }
 
+.progress { position: relative; height: 26px; border-radius: 8px; background: var(--surface-2); overflow: hidden; margin: .5rem 0; }
+.progress-bar { position: absolute; inset: 0 auto 0 0; background: var(--good-soft); border-right: 2px solid var(--good); transition: width .4s; }
+.progress-label { position: relative; display: block; padding: .2rem .6rem; font-size: .85rem; font-weight: 600; }
+.badge.warn { background: var(--ok-soft); color: var(--ok); }
+.spinner.inline { display: inline-block; width: 10px; height: 10px; margin-right: .3rem; vertical-align: -1px; }
+.notice.admin { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.notice.admin input { max-width: 260px; }
 .pipeline { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem; }
 .scrapers { margin: .4rem 0 0; padding-left: 1.3rem; display: grid; gap: .3rem; }
-.scrapers li { display: flex; justify-content: space-between; gap: .5rem; }
+.scrapers li { display: flex; justify-content: space-between; align-items: flex-start; gap: .5rem; }
 .scrapers li.off span:first-child { color: var(--muted); }
 .issues { list-style: none; padding: 0; margin: .4rem 0 0; display: grid; gap: .45rem; font-size: .88rem; }
 

@@ -68,8 +68,9 @@ def cmd_sources(args) -> None:
 def cmd_check(args) -> None:
     """Detect platform and pull a few products from each source; report what works."""
     rows = run_check(_entries(args), sample=args.sample, delay=args.delay, fetcher_factory=Fetcher)
-    ok = sum(1 for r in rows if r["status"] == "OK")
-    print(f"\n{ok}/{len(rows)} sources working. Fix FAILs in {args.sources} (selectors, url_include, fetch_mode).")
+    counts = {k: sum(1 for r in rows if r["status"] == k) for k in ("OK", "PARTIAL", "FAIL")}
+    print(f"\n{counts['OK']} working, {counts['PARTIAL']} partial, {counts['FAIL']} failing of {len(rows)}. "
+          f"Fix sources in {args.sources} (start_urls, url_include, fetch_mode).")
 
 
 def cmd_scrape(args) -> None:
@@ -245,37 +246,57 @@ def _duration(text: str) -> float:
 
 
 def cmd_schedule(args) -> None:
-    """Scrape every enabled source on a fixed interval, forever (the Docker scraper service)."""
+    """The scraper service: scheduled scrapes plus any jobs queued from the website."""
     import random
     import signal
     import threading
     import time
+    from datetime import datetime, timezone
+
+    from .jobs import execute
 
     stop = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: stop.set())
+    store = Store(args.db)
+    store.fail_stale_jobs()
 
-    def log(line: str) -> None:
+    def say(line: str) -> None:
         print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {line}", flush=True)
 
+    def heartbeat() -> None:
+        store.set_kv("worker_heartbeat", datetime.now(timezone.utc).isoformat(timespec="seconds"))
+
+    def run(kind: str, origin: str) -> None:
+        # Scheduled runs go through the same queue, so the website shows their progress too.
+        store.enqueue_job(kind, [], args.limit, origin=origin)
+        drain()
+
+    def drain() -> None:
+        while not stop.is_set() and (job := store.claim_job()):
+            say(f"{job['kind']} job {job['id']} ({job['origin']}) started")
+            status = execute(job, args.db, args.sources, fetcher_factory=Fetcher)
+            for line in (store.job(job["id"]) or {}).get("log", [])[-3:]:
+                say("  " + line)
+            say(f"{job['kind']} job {job['id']} {status}")
+            heartbeat()
+
+    from .sources.backends import describe
+    store.set_kv("worker_scrapers", json.dumps(describe()))   # what *this* container can run, for the website
+    heartbeat()
     if args.check_first:
-        log("checking sources...")
-        run_check(_entries(args), log=log, fetcher_factory=Fetcher)
+        run("check", "schedule")
     while not stop.is_set():
-        started = time.monotonic()
-        log("scrape run starting")
-        try:
-            counts = run_scrape(_entries(args), args.db, log=log, limit=args.limit, delay=args.delay,
-                                fetcher_factory=Fetcher, cancel=stop)
-            log(f"scrape run finished: {sum(counts.values())} products in {time.monotonic() - started:.0f}s")
-        except Exception as e:  # keep the service alive; the next run may succeed
-            log(f"scrape run failed: {type(e).__name__}: {e}")
+        run("scrape", "schedule")
         if args.once:
             break
-        wait = args.every + random.uniform(0, args.jitter)
-        log(f"next run in {wait / 3600:.1f} h")
-        stop.wait(wait)
-    log("scheduler stopped")
+        next_run = time.monotonic() + args.every + random.uniform(0, args.jitter)
+        say(f"next scheduled scrape in {(next_run - time.monotonic()) / 3600:.1f} h; watching for jobs from the website")
+        while not stop.is_set() and time.monotonic() < next_run:
+            heartbeat()
+            drain()
+            stop.wait(5)
+    say("scheduler stopped")
 
 
 def cmd_deals(args) -> None:
@@ -321,10 +342,40 @@ def cmd_quality(args) -> None:
 
 
 def cmd_scrapers(args) -> None:
-    from .sources.backends import describe
-    for b in describe():
-        print(f"{b['name']:<18} {'installed' if b['available'] else 'not installed':<14} "
-              f"{'browser' if b['browser'] else 'http'}")
+    """List the fallback chain; with --test URL, fetch that page through each scraper separately."""
+    import time
+
+    from .sources.backends import ALL_BACKENDS, block_reason
+
+    failed = []
+    for cls in ALL_BACKENDS:
+        b = cls()
+        missing = b.missing()
+        line = f"{b.name:<18} {'browser' if b.browser else 'http':<8} "
+        if missing:
+            print(line + f"not available: {missing}")
+            if b.name in args.require:
+                failed.append(b.name)
+            continue
+        if not args.test:
+            print(line + "ready")
+            continue
+        t0 = time.monotonic()
+        try:
+            page = b.fetch(args.test, {})
+            reason = block_reason(page) or (f"HTTP {page.status}" if page.status >= 400 else None)
+            size = len(page.body if isinstance(page.body, bytes) else str(page.body).encode())
+            ok = reason is None
+            print(line + (f"ok   {size:,} bytes in {time.monotonic() - t0:.1f}s" if ok else f"FAIL {reason}"))
+        except Exception as e:
+            ok = False
+            print(line + f"FAIL {type(e).__name__}: {str(e).splitlines()[0][:120] if str(e) else ''}")
+        finally:
+            b.close()
+        if not ok and b.name in args.require:
+            failed.append(b.name)
+    if failed:
+        sys.exit(f"required scrapers not working: {', '.join(failed)}")
 
 
 def cmd_export(args) -> None:
@@ -437,7 +488,10 @@ def main(argv: list[str] | None = None) -> None:
     s = sub.add_parser("quality", help="what cleaning rejected or fixed, and where sources disagree")
     s.set_defaults(func=cmd_quality)
 
-    s = sub.add_parser("scrapers", help="which scraper backends are installed for the fallback chain")
+    s = sub.add_parser("scrapers", help="which scrapers in the fallback chain are ready; --test URL tries each")
+    s.add_argument("--test", metavar="URL", help="fetch this page through every available scraper")
+    s.add_argument("--require", type=lambda v: [x.strip() for x in v.split(",") if x.strip()], default=[],
+                   help="comma list of scrapers that must work (exit 1 otherwise), e.g. scrapling-dynamic")
     s.set_defaults(func=cmd_scrapers)
 
     s = sub.add_parser("export", help="dump the catalogue as CSV or JSON")

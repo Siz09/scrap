@@ -13,7 +13,7 @@ from urllib.parse import urlparse
 
 from ..paths import detect_cache
 from .base import Fetcher
-from .generic import GenericSource, SiteConfig, extract_jsonld_product, sitemap_urls
+from .generic import GenericSource, SiteConfig, extract_jsonld_product
 
 log = logging.getLogger(__name__)
 
@@ -27,14 +27,14 @@ def detect(fetcher: Fetcher, base_url: str) -> dict:
         return {**report, "platform": "daraz", "evidence": "daraz domain"}
 
     try:
-        data = fetcher.get_json(f"{base}/products.json?limit=1")
+        data = fetcher.get_json(f"{base}/products.json?limit=1", fallback=False)
         if isinstance(data, dict) and "products" in data:
             return {**report, "platform": "shopify", "evidence": "/products.json returned products"}
     except Exception as e:
         report["shopify_error"] = str(e)[:120]
 
     try:
-        data = fetcher.get_json(f"{base}/wp-json/wc/store/v1/products?per_page=1")
+        data = fetcher.get_json(f"{base}/wp-json/wc/store/v1/products?per_page=1", fallback=False)
         if isinstance(data, list):
             return {**report, "platform": "woocommerce", "evidence": "Store API returned a product list"}
     except Exception as e:
@@ -43,9 +43,7 @@ def detect(fetcher: Fetcher, base_url: str) -> dict:
     # Fall back to JSON-LD: sample a few sitemap URLs that look like products.
     src = GenericSource(SiteConfig(name="_detect", base_url=base))
     sampled = 0
-    for url in sitemap_urls(fetcher, base, limit=2000):
-        if not src._wanted(url):
-            continue
+    for url in src.discover(fetcher):
         sampled += 1
         try:
             if extract_jsonld_product(fetcher.get(url)):
@@ -56,7 +54,8 @@ def detect(fetcher: Fetcher, base_url: str) -> dict:
             break
     report["platform"] = "unknown"
     report["evidence"] = (f"no product JSON-LD on {sampled} sampled sitemap URLs" if sampled
-                          else "no sitemap product URLs found; set product_link_css/start_urls or fetch_mode=dynamic")
+                          else "no product links found in the sitemap or on the category pages; "
+                               "set start_urls to a category page, or install the browser scrapers")
     return report
 
 

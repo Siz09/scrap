@@ -243,3 +243,11 @@ def test_unknown_os_is_warned_not_excluded(catalogue):
     a = advise(catalogue, Needs(category=Category.PHONE, budget_max=60000, os=["android"]))
     alpha = next(p for p in a.picks if p.ranked.product.name == "Alpha Cam")
     assert any("operating system" in w for w in alpha.warnings)
+
+
+def test_daraz_listing_from_html_page_data():
+    from devicescout.sources.daraz import items_from_html
+    catalog = (FIX / "daraz_catalog.json").read_text()
+    html = f"<html><head><script>window.pageData = {catalog};</script></head><body></body></html>"
+    assert len(items_from_html(html)) == 6
+    assert items_from_html("<html>captcha</html>") == []

@@ -16,12 +16,22 @@ The website and the scraper run as two containers sharing one database:
 
 ```bash
 git clone https://github.com/Siz09/scrap.git && cd scrap
-docker compose up -d
+cp .env.example .env          # Windows PowerShell: Copy-Item .env.example .env
+# edit .env and set DEVICESCOUT_ADMIN_KEY (your key for the Data sources page)
+docker compose up -d --build
 ```
 
+Settings live in `.env`, which Docker Compose reads automatically in any shell (PowerShell, cmd, bash). The file is git-ignored, so your key is never committed.
+
 This starts:
-- **web**: the website at http://localhost:8765. It's read-only, so visitors can't start scraping.
-- **scraper**: checks every source once, then scrapes all enabled sources every 6 hours (set `SCRAPE_EVERY=12h` to change it). It waits politely between requests and follows robots.txt.
+- **web** (`ghcr.io/siz09/scrap`): the website at http://localhost:8765. It's read-only for visitors. To run **Check sources** or **Update prices** from the *Data sources* page, enter your `DEVICESCOUT_ADMIN_KEY` there. The site queues the job and the scraper container runs it, with a live progress bar. Without the key set, the page is purely informational.
+- **scraper** (`ghcr.io/siz09/scrap-scraper`): checks every source once, then scrapes all enabled sources every 6 hours (`SCRAPE_EVERY=12h` to change it). It also runs jobs queued from the website within about 5 seconds. Every scraper in the fallback chain is installed and ready:
+  - fast HTTP and plain HTTP,
+  - Chromium (`scrapling-dynamic`),
+  - stealth Chromium (`scrapling-stealth`, patchright),
+  - Crawl4AI.
+
+  Firecrawl turns on if you set `FIRECRAWL_API_KEY`; it's a paid hosted service.
 
 To give it a real domain with HTTPS, point the domain's DNS at your server and run:
 
@@ -34,11 +44,11 @@ Caddy gets and renews the certificate automatically. You can then close port 876
 Useful commands:
 
 ```bash
-docker compose logs -f scraper                          # watch scraping
-docker compose exec scraper devicescout quality         # what cleaning rejected
-docker compose exec scraper devicescout scrape --all    # scrape now instead of waiting
-docker compose exec scraper devicescout reprocess       # rebuild after a parser update
-docker compose pull && docker compose up -d             # update to the latest published image
+docker compose logs -f scraper                                   # watch scraping
+docker compose exec scraper devicescout scrapers --test https://example.com   # try every scraper
+docker compose exec scraper devicescout quality                  # what cleaning rejected
+docker compose exec scraper devicescout reprocess                # rebuild after a parser update
+docker compose pull && docker compose up -d                      # update to the latest published images
 ```
 
 Data (the database, `sources.json` and caches) lives in the `data` volume at `/data`. To edit the source list, copy it out and back in:
@@ -48,9 +58,9 @@ docker compose cp scraper:/data/sources.json .
 docker compose cp ./sources.json scraper:/data/sources.json
 ```
 
-Or mount your own file with `./sources.json:/data/sources.json`.
+If the file has a mistake, the *Data sources* page shows the error and the line number.
 
-The image is published to `ghcr.io/siz09/scrap` by the `Docker image` workflow on every push to `main` (the `latest` tag) and on `v*` tags. Browser-based scrapers are left out to keep the image small. Build with `--build-arg WITH_BROWSERS=true` if a source needs `fetch_mode: dynamic` or `stealth`.
+The images are published by the `Docker images` workflow on every push to `main` (the `latest` tag) and on `v*` tags. Before anything is published, the workflow builds both images, fetches a real page with every scraper in the scraper image, and starts the whole stack to test the admin key and job queue.
 
 **Try it without scraping anything.** `docker compose run --rm -p 8765:8765 web devicescout serve --host 0.0.0.0 --no-browser --sample` serves a fictional demo catalogue.
 
@@ -178,7 +188,8 @@ Shopify stores' sale and festival collections (sale, offer, flash, Dashain, Tiha
 devicescout search s24 ultra        # full-text: names, every alias a model was listed under, chipsets
 devicescout quality                 # what cleaning rejected or fixed, and where sources disagree
 devicescout reprocess               # rebuild the catalogue from stored raw records with current parsers
-devicescout scrapers                # which fallback scrapers are installed
+devicescout scrapers                # which fallback scrapers are ready (and why not)
+devicescout scrapers --test URL     # fetch a page through each scraper separately
 ```
 
 ## Scraping pipeline
@@ -265,5 +276,5 @@ See [docs/scrapers.md](docs/scrapers.md) for the other scraping tools and when t
 - **Nothing has run against a live site yet.** This build environment blocks those hosts. The tests use fixtures that match each platform's documented format, and the Daraz field names come from a working open-source client. Run `check` before you trust any source.
 - **Store listings are thin on specs.** A Daraz-only device scores with low confidence until GSMArena or a spec-rich store provides its specs. Scrape GSMArena in the same run.
 - **Specs aren't quality.** Expert scores (Notebookcheck, and DXOMARK once it's enabled) are what make the photography and gaming rankings trustworthy. `chip_tier` is a hand-made stand-in until benchmark data is added.
-- **The default Docker image only scrapes over plain HTTP.** It leaves out the browser engines to stay small. Sites that need `fetch_mode: dynamic` or `stealth` need an image built with `WITH_BROWSERS=true`.
+- **Browser scrapers are slow and heavy** (about 1 GB more image, and seconds per page). They only run when the fast HTTP scrapers are blocked or a page is built by JavaScript.
 - **Terms of service.** Check each site's terms and robots.txt, and keep the default delays. Prefer an official feed or API wherever a store offers one.

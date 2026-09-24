@@ -30,11 +30,11 @@ class FakeFetcher:
                 return resp(url) if callable(resp) else resp
         raise RuntimeError(f"HTTP 404 for {url}")
 
-    def get(self, url, headers=None, mode=None):
+    def get(self, url, headers=None, mode=None, want_json=False, fallback=True):
         r = self._match(url)
         return FakePage(r if isinstance(r, str) else json.dumps(r), url)
 
-    def get_json(self, url, headers=None):
+    def get_json(self, url, headers=None, fallback=True):
         r = self._match(url)
         if isinstance(r, str):
             raise ValueError("expected JSON, got HTML")
@@ -157,3 +157,27 @@ def test_cli_scrape_check_and_advise(tmp_path, monkeypatch, capsys):
     out = json.loads(capsys.readouterr().out)
     assert out["picks"][0]["name"].startswith("Redmi Note 14 Pro")
     assert out["picks"][0]["price_npr"] == 38999
+
+
+def test_browses_category_pages_when_no_sitemap():
+    from devicescout.sources import GenericSource, SiteConfig
+
+    links = "".join(f'<a href="/{s}">x</a>' for s in
+                    ["samsung-galaxy-a56-5g-8gb-256gb", "redmi-note-14-pro-5g", "cart", "about-us",
+                     "mobile-phones", "logo.png", "apple-iphone-16-pro-max-256gb"])
+    home = '<html><body><a href="/mobile-phones">Phones</a><a href="/laptops">Laptops</a>' + "x" * 500 + "</body></html>"
+    f = FakeFetcher({
+        "shop.com.np/mobile-phones": f"<html><body>{links}{'x' * 500}</body></html>",
+        "shop.com.np/laptops": "<html><body>" + "x" * 500 + "</body></html>",
+        "https://shop.com.np/": home,
+    })
+    urls = list(GenericSource(SiteConfig(name="s", base_url="https://shop.com.np/"))._browse(f, "https://shop.com.np/"))
+    assert urls == ["https://shop.com.np/samsung-galaxy-a56-5g-8gb-256gb",
+                    "https://shop.com.np/redmi-note-14-pro-5g",
+                    "https://shop.com.np/apple-iphone-16-pro-max-256gb"]
+
+
+def test_page_without_product_data_is_not_a_product():
+    from devicescout.sources import GenericSource, SiteConfig
+    page = Selector("<html><body><h1>Latest mobile news</h1><p>text</p></body></html>", url="https://x/news")
+    assert GenericSource(SiteConfig(name="s")).parse(page) is None

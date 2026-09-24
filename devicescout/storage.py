@@ -82,6 +82,19 @@ CREATE TABLE IF NOT EXISTS aliases (
     source TEXT,
     PRIMARY KEY (product_key, alias)
 );
+CREATE TABLE IF NOT EXISTS jobs (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,                  -- check | scrape
+    names TEXT NOT NULL DEFAULT '[]',    -- JSON list of source names; [] = all enabled
+    limit_n INTEGER,
+    origin TEXT,                         -- ui | schedule | cli
+    status TEXT NOT NULL,                -- queued | running | done | failed | cancelled
+    cancel_requested INTEGER NOT NULL DEFAULT 0,
+    progress TEXT NOT NULL DEFAULT '{}', -- {"done": 3, "total": 15, "current": "hukut"}
+    log TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT
+);
+CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
 CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
     key UNINDEXED, name, brand, aliases, category, chipset, tokenize = 'unicode61 remove_diacritics 2'
 );
@@ -321,6 +334,72 @@ class Store:
         for table in ("products", "offers", "aliases", "search_index", "quality_issues"):
             self.db.execute(f"DELETE FROM {table}")
         self.db.commit()
+
+    # --- job queue (shared by the website and the scraper container) --------------
+
+    def enqueue_job(self, kind: str, names: list[str], limit: int | None, origin: str) -> dict:
+        import uuid
+        job_id = uuid.uuid4().hex[:10]
+        self.db.execute("INSERT INTO jobs (id, kind, names, limit_n, origin, status, created_at) VALUES (?,?,?,?,?,?,?)",
+                        (job_id, kind, json.dumps(names), limit, origin, "queued", _now()))
+        self.db.commit()
+        return self.job(job_id)
+
+    def claim_job(self) -> dict | None:
+        """Atomically take the oldest queued job (only one worker can win it)."""
+        row = self.db.execute(
+            """UPDATE jobs SET status = 'running', started_at = ?
+               WHERE id = (SELECT id FROM jobs WHERE status = 'queued' ORDER BY created_at LIMIT 1)
+               RETURNING id""", (_now(),)).fetchone()
+        self.db.commit()
+        return self.job(row["id"]) if row else None
+
+    def job(self, job_id: str) -> dict | None:
+        row = self.db.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        for k in ("names", "progress", "log"):
+            d[k] = json.loads(d[k])
+        d["cancel_requested"] = bool(d["cancel_requested"])
+        return d
+
+    def jobs(self, limit: int = 20) -> list[dict]:
+        ids = [r["id"] for r in self.db.execute("SELECT id FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,))]
+        return [self.job(i) for i in ids]
+
+    def job_log(self, job_id: str, line: str, keep: int = 500) -> None:
+        row = self.db.execute("SELECT log FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        lines = (json.loads(row["log"]) if row else []) + [line]
+        self.db.execute("UPDATE jobs SET log = ? WHERE id = ?", (json.dumps(lines[-keep:]), job_id))
+        self.db.commit()
+
+    def job_progress(self, job_id: str, **progress) -> None:
+        self.db.execute("UPDATE jobs SET progress = ? WHERE id = ?", (json.dumps(progress), job_id))
+        self.db.commit()
+
+    def finish_job(self, job_id: str, status: str) -> None:
+        self.db.execute("UPDATE jobs SET status = ?, finished_at = ? WHERE id = ?", (status, _now(), job_id))
+        self.db.commit()
+
+    def request_cancel(self) -> int:
+        cur = self.db.execute("UPDATE jobs SET cancel_requested = 1 WHERE status IN ('queued', 'running')")
+        self.db.execute("UPDATE jobs SET status = 'cancelled', finished_at = ? WHERE status = 'queued'", (_now(),))
+        self.db.commit()
+        return cur.rowcount
+
+    def fail_stale_jobs(self) -> None:
+        """Jobs left 'running' by a worker that died (container restarted)."""
+        self.db.execute("UPDATE jobs SET status = 'failed', finished_at = ? WHERE status = 'running'", (_now(),))
+        self.db.commit()
+
+    def set_kv(self, k: str, v: str) -> None:
+        self.db.execute("INSERT OR REPLACE INTO kv VALUES (?, ?)", (k, v))
+        self.db.commit()
+
+    def get_kv(self, k: str) -> str | None:
+        row = self.db.execute("SELECT v FROM kv WHERE k = ?", (k,)).fetchone()
+        return row["v"] if row else None
 
     def product(self, key: str) -> Product | None:
         found = self.products(key=key)
