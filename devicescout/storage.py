@@ -182,7 +182,7 @@ class Store:
             row = self.db.execute("SELECT key FROM products WHERE gtin = ?", (p.gtin,)).fetchone()
             if row:
                 return row["key"]
-        return canonical_key(p.brand, p.name)
+        return canonical_key(p.brand, p.name, p.category)
 
     def upsert(self, p: Product) -> str:
         key = self._key_for(p)
@@ -212,6 +212,10 @@ class Store:
                 category = p.category
             use_new = prio > SOURCE_PRIORITY.get(row["primary_source"], 0)
             name = p.name if use_new else row["name"]
+            # Same standing: keep the plainer title ('OnePlus 12', not 'OnePlus 12 5G 54000mAh 50MP ...').
+            if not use_new and prio == SOURCE_PRIORITY.get(row["primary_source"], 0) \
+                    and len(clean_title(p.name)) < len(clean_title(name)):
+                name = p.name
             brand = row["brand"] or p.brand
             primary_source = p.source if use_new else row["primary_source"]
             primary_url = p.url if use_new else row["primary_url"]

@@ -115,6 +115,37 @@ def test_canonical_key_merges_variants():
     assert canonical_key("Google", "Google Pixel 9 128GB Obsidian") == "google pixel 9"
 
 
+def test_phone_titles_with_a_sales_pitch_are_the_same_model():
+    """Store titles pile specs after the model; they must land on the same card."""
+    P = Category.PHONE
+    same = [("OnePlus 12", "OnePlus 12 5G 54000mAh 50MP Triple Main Camera Smartphone"),
+            ("OnePlus 13", "OnePlus 13 6.82-inch 50MP Sony LYT-808 50MP Qualcomm Snapdragon 8 Elite Smartphone"),
+            ("OnePlus 15", "OnePlus 15 Snapdragon®8 Elite Gen 5 7300mAh 50MP"),
+            ("OnePlus Nord 6", "OnePlus Nord 6 5G Smartphone Features and Specs"),
+            ("OnePlus Nord CE 5", "OnePlus Nord CE5 5G 7100mAh Battery"),
+            ("OnePlus Nord CE 4 Lite", "OnePlus Nord CE4 Lite 5G")]
+    for a, b in same:
+        assert canonical_key("OnePlus", a, P) == canonical_key("OnePlus", b, P), b
+    assert canonical_key("OnePlus", "OnePlus 12R 5G", P) != canonical_key("OnePlus", "OnePlus 12", P)
+    # Elsewhere the numbers are the model: power banks of different sizes stay apart.
+    pb = Category.POWER_BANK
+    assert canonical_key("UGREEN", "UGREEN 20000mAh Power Bank", pb) != canonical_key("UGREEN", "UGREEN 10000mAh Power Bank", pb)
+
+
+def test_merged_card_keeps_the_plain_name(tmp_path):
+    from devicescout.models import Offer, Product
+    store = Store(tmp_path / "t.db")
+    def phone(name, price):
+        return Product(source="hukut", url=f"https://s/{price}", name=name, brand="OnePlus", category=Category.PHONE,
+                       offers=[Offer(source="hukut", url=f"https://s/{price}", price=price, currency="NPR",
+                                     scraped_at="2026-09-24T00:00:00+00:00")])
+    k1 = store.upsert(phone("OnePlus 12 5G 54000mAh 50MP Triple Main Camera Smartphone", 139999))
+    k2 = store.upsert(phone("OnePlus 12", 139999))
+    assert k1 == k2
+    [p] = store.products(Category.PHONE)
+    assert p.name == "OnePlus 12"
+
+
 def test_chip_tier():
     assert chip_tier("Snapdragon 8 Gen 3") == 9
     assert chip_tier("Google Tensor G4") == 8

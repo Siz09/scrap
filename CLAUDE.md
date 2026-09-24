@@ -78,6 +78,14 @@ cd web && npm run build                     # typecheck + build into devicescout
 - `ops.jobs` and `ops.kv`.
 - Extensions: pg_trgm, unaccent, btree_gin, pg_stat_statements. `SCHEMA_VERSION` "5".
 
+**Matching one model across sites** (`normalize.canonical_key(brand, name, category)`)
+- Drops storage/colour/"5G"/warranty noise from the title.
+- For phones, tablets and watches it also cuts the sales pitch after the model (`model_name`: from the first
+  "mAh / MP / inch / Snapdragon / Triple Camera / Features and Specs" onwards), and splits "CE5" into "CE 5".
+- Other categories keep their numbers, because there the numbers are the model (power banks).
+- A merged card keeps the plainest title. After changing these rules, run `devicescout reprocess` to rebuild
+  the catalogue from raw records; nothing needs scraping again.
+
 **Jobs** (`jobs.py`, `cli.py cmd_schedule`)
 - **One job at a time, one website at a time** (owner's request). The scheduled run and the Check/Update
   jobs started from the website share one queue, taken oldest first. A job started from the page waits

@@ -345,13 +345,40 @@ def clean_title(name: str) -> str:
     return re.sub(r"\s+", " ", _TITLE_TAIL.sub("", name)).strip()
 
 
-def canonical_key(brand: str | None, name: str) -> str:
+# Where a phone/tablet/watch listing's model name ends and its sales pitch begins:
+# 'OnePlus 12 5G 54000mAh 50MP Triple Main Camera Smartphone', 'OnePlus 13 6.82-inch 50MP Sony
+# LYT-808 ...', 'OnePlus 10T 5G Qualcomm SM8475 Snapdragon 8+ Gen 1', 'Nord 6 5G Features and Specs'.
+_PITCH = re.compile(
+    r"\s(?:\d+(?:\.\d+)?\s*-?\s*(?:mah|mp|w|hz|inch(?:es)?|\"|nits|cm)\b|"
+    r"(?:qualcomm|snapdragon|dimensity|mediatek|helio|exynos|tensor|kirin|unisoc|bionic|sony\s+lyt|"
+    r"triple|quad|dual\s+camera|main\s+camera|camera|battery|processor|features|specs|"
+    r"specifications|amoled|oled|display|ai\s+phone)(?:\b|(?=[®™])))",
+    re.I,
+)
+_PITCH_CATEGORIES = {"phone", "tablet", "smartwatch"}
+# 'Nord CE5' = 'Nord CE 5', 'Z Fold6' = 'Z Fold 6', 'Note13' = 'Note 13'.
+_JOINED_NUMBER = re.compile(r"\b(ce|note|fold|flip|pad|watch|nord)(\d)", re.I)
+
+
+def model_name(name: str, category=None) -> str:
+    """The model part of a listing title, for phones, tablets and watches (their titles pile
+    specs after the model). Other devices are left alone: '20000mAh 165W Power Bank' IS the model."""
+    cat = getattr(category, "value", category)
+    if cat not in _PITCH_CATEGORIES:
+        return name
+    m = _PITCH.search(name)
+    if m and len(name[: m.start()].split()) >= 2:   # keep at least brand + model
+        return name[: m.start()]
+    return name
+
+
+def canonical_key(brand: str | None, name: str, category=None) -> str:
     """A key that collapses storage/colour/carrier/listing-noise variants of one model.
 
     'Samsung Galaxy S24 Ultra 5G 256GB Titanium Black', 'Galaxy S24 Ultra (12GB/512GB)' and
     'Samsung Galaxy S24 Ultra (12/256) - 1 Year Official Warranty' -> 'samsung galaxy s24 ultra'
     """
-    n = clean_title(name).lower()
+    n = _JOINED_NUMBER.sub(r"\1 \2", model_name(clean_title(name), category)).lower()
     b = (brand or "").lower().strip()
     if b in ("no brand", "generic", "oem"):
         b = ""
