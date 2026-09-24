@@ -51,10 +51,10 @@ def detect(fetcher: Fetcher, base_url: str, start_urls: list[str] | None = None,
             page = fetcher.get(url, mode=src.fetch_mode)
             if extract_jsonld_product(page):
                 return {**report, "platform": "jsonld", "evidence": f"JSON-LD Product on {url}"}
-            p = src.parse(page)
+            p = src._product(fetcher, url, page)     # renders in a browser if the page needs it
             if p and p.offers:
-                return {**report, "platform": "jsonld",
-                        "evidence": f"product with a price on {url} (from page data, not JSON-LD)"}
+                how = "rendered in a browser" if src._browser_wins else "from page data, not JSON-LD"
+                return {**report, "platform": "jsonld", "evidence": f"product with a price on {url} ({how})"}
         except Exception as e:
             report["jsonld_error"] = str(e)[:120]
         if sampled >= 3:
