@@ -308,6 +308,10 @@ class Store:
     def record_page(self, source, url, status, scraper, content_type, body) -> None:
         """Raw pages are kept by the PostgreSQL store only (SQLite is for trying things out)."""
 
+    def pages_since(self, source: str, since: str) -> set[str]:
+        """Pages are kept by the PostgreSQL store only: nothing to resume from here."""
+        return set()
+
     def raw_summary(self) -> list[dict]:
         return [dict(r) for r in self.db.execute(
             "SELECT source, 0 AS pages, COUNT(*) AS records, MAX(fetched_at) AS last_seen "

@@ -61,7 +61,7 @@ CHECK_SECONDS = 180       # ... nor spend more than 3 minutes on one source
 
 
 def crawl_entry(entry: dict, fetcher, limit: int | None, browse_pages: int | None = None,
-                seconds: float | None = None):
+                seconds: float | None = None, skip_urls: set[str] | None = None):
     limit = limit or 10**9            # 0/None: everything the site has
     if entry.get("delay") and hasattr(fetcher, "host_delay"):
         from urllib.parse import urlparse
@@ -73,6 +73,8 @@ def crawl_entry(entry: dict, fetcher, limit: int | None, browse_pages: int | Non
         source.cfg.browse_pages = min(source.cfg.browse_pages, browse_pages)
     if seconds:
         source.deadline = time.monotonic() + seconds
+    if skip_urls and hasattr(source, "skip_urls"):
+        source.skip_urls = set(skip_urls)
     if entry.get("type") == "gsmarena":
         brands = entry.get("brands", ["samsung"])
         per_brand = max(1, limit // max(1, len(brands)))
@@ -210,35 +212,69 @@ def refresh_rates(store, log: Log = print) -> None:
         log("exchange rates: feeds unreachable, using built-in estimates")
 
 
+WATCH_SECONDS = 20       # heartbeat / Stop check while a job runs
+_CYCLE_KEY = "scrape_cycle"
+CYCLE_MAX_HOURS = 48      # an unfinished run older than this starts over instead of resuming
+
+
+def _load_cycle(store) -> dict | None:
+    raw = store.get_kv(_CYCLE_KEY)
+    if not raw:
+        return None
+    try:
+        cycle = json.loads(raw)
+        age = datetime.now(timezone.utc) - datetime.fromisoformat(cycle["started"])
+        return cycle if age.total_seconds() < CYCLE_MAX_HOURS * 3600 else None
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
 def run_scrape(entries: list[dict], db_path, log: Log = print, limit: int = 0, delay: float = 2.0,
                mode: str = "static", respect_robots: bool = True, fetcher_factory=Fetcher,
                cancel: threading.Event | None = None, verbose: bool = False,
-               progress: Progress = _noop) -> dict[str, int]:
+               progress: Progress = _noop, resume: bool = False) -> dict[str, int]:
+    """Scrape each source in turn. With `resume` (full runs), a run cut short by a restart
+    carries on where it stopped: sites finished in this run are skipped, and the site it was on
+    skips product pages it already read. The run's state lives in the kv row `scrape_cycle`."""
     store = open_store(db_path)
     counts: dict[str, int] = {}
     entries = scrape_order(entries)
     refresh_rates(store, log)
+    cycle = _load_cycle(store) if resume else None
+    if cycle:
+        done_before = [e["name"] for e in entries if e["name"] in cycle["done"]]
+        log(f"continuing the run started {cycle['started']} (interrupted by a restart)"
+            + (f"; already done: {', '.join(done_before)}" if done_before else ""))
+    elif resume:
+        cycle = {"started": _now(), "done": []}
+        store.set_kv(_CYCLE_KEY, json.dumps(cycle))
     try:
         with fetcher_factory(mode=mode, delay=delay, respect_robots=respect_robots) as fetcher:
             for i, e in enumerate(entries):
+                progress(done=i, total=len(entries), current=e["name"])
+                if cycle and e["name"] in cycle["done"]:
+                    continue
                 n = 0
                 stats = IngestStats()
-                progress(done=i, total=len(entries), current=e["name"])
                 started = time.monotonic()
                 _save_status(e["name"], scrape_running=True, scrape_started_at=_now(), scrape_so_far=0)
                 outcome = "done"
                 _reset_stats(fetcher)
                 fetcher.page_sink = _archive(store, e["name"])
-                log(f"{e['name']}: scraping...")
+                skip = store.pages_since(e["name"], cycle["started"]) if cycle else set()
+                log(f"{e['name']}: scraping..." + (f" (skipping {len(skip)} pages already read in this run)" if skip else ""))
+                last_count = time.monotonic()
                 try:
-                    for product in crawl_entry(e, fetcher, limit):
+                    for product in crawl_entry(e, fetcher, limit, skip_urls=skip):
                         if cancel and cancel.is_set():
                             break
                         ingest(store, product, stats)   # raw -> clean -> refine -> index
                         n += 1
-                        if verbose or n % 25 == 0:
+                        if verbose or n in (1, 5, 10) or n % 25 == 0:
                             log(f"  {n}: [{product.category.value}] {product.name}")
+                        if n == 1 or time.monotonic() - last_count > 5:   # live count on the page
                             _save_status(e["name"], scrape_so_far=n)
+                            last_count = time.monotonic()
                 except RateLimited as ex:
                     outcome = "rate limited"
                     log(f"{e['name']}: stopped after {n} products ({ex})")
@@ -258,7 +294,12 @@ def run_scrape(entries: list[dict], db_path, log: Log = print, limit: int = 0, d
                 if cancel and cancel.is_set():
                     log("cancelled")
                     break
-            progress(done=len(counts), total=len(entries), current=None)
+                if cycle:            # finished (even with an error: a failing site isn't retried in a loop)
+                    cycle["done"].append(e["name"])
+                    store.set_kv(_CYCLE_KEY, json.dumps(cycle))
+            progress(done=len(entries), total=len(entries), current=None)
+            if cycle and not (cancel and cancel.is_set()):
+                store.set_kv(_CYCLE_KEY, "")         # the whole run is done: next one starts at the top
     finally:
         store.close()
     log(f"saved {sum(counts.values())} products")
@@ -283,18 +324,6 @@ def execute(job: dict, db_path, sources_path, fetcher_factory=Fetcher) -> str:
         # Long jobs (a whole-site scrape takes hours): keep telling the website the scraper is up.
         store.set_kv("worker_heartbeat", _now())
 
-    # log()/progress() only fire on source/product milestones, which a slow single-source
-    # crawl (redirects, retries, a listing walk before the first product lands) can space out
-    # past the website's 90s staleness check -- ticking here keeps the heartbeat live regardless.
-    heartbeat_stop = threading.Event()
-    HEARTBEAT_SECONDS = 20
-
-    def tick_heartbeat() -> None:
-        while not heartbeat_stop.wait(HEARTBEAT_SECONDS):
-            alive()
-
-    threading.Thread(target=tick_heartbeat, daemon=True, name="job-heartbeat").start()
-
     def log(line: str) -> None:
         if store.job(job["id"])["cancel_requested"]:
             cancel.set()
@@ -306,6 +335,24 @@ def execute(job: dict, db_path, sources_path, fetcher_factory=Fetcher) -> str:
         store.job_progress(job["id"], **p)
         alive()
 
+    # Every 20 s while the job runs, even when it prints nothing for a long time (a site walked
+    # in a browser): tell the website the scraper is alive, and notice Stop.
+    finished = threading.Event()
+
+    def watch() -> None:
+        own = open_store(db_path)
+        try:
+            while not finished.wait(WATCH_SECONDS):
+                own.set_kv("worker_heartbeat", _now())
+                j = own.job(job["id"])
+                if j and j["cancel_requested"]:
+                    cancel.set()
+        except Exception as e:           # never take the job down with it
+            print(f"heartbeat stopped: {e}", flush=True)
+        finally:
+            own.close()
+    threading.Thread(target=watch, daemon=True, name=f"job-{job['id']}-watch").start()
+
     status = "done"
     try:
         entries = select_entries(str(sources_path), job["names"])
@@ -316,14 +363,15 @@ def execute(job: dict, db_path, sources_path, fetcher_factory=Fetcher) -> str:
                       db_path=db_path)
         else:
             run_scrape(entries, db_path, log=log, progress=progress, cancel=cancel,
-                       limit=job.get("limit_n") or 0, fetcher_factory=fetcher_factory)
+                       limit=job.get("limit_n") or 0, fetcher_factory=fetcher_factory,
+                       resume=not job["names"])       # a full run picks up where a restart cut it
         if cancel.is_set():
             status = "cancelled"
     except Exception as ex:
         log(f"failed: {type(ex).__name__}: {ex}")
         status = "failed"
     finally:
-        heartbeat_stop.set()
+        finished.set()
         store.finish_job(job["id"], status)
         store.close()
     return status
