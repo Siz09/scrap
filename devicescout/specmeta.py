@@ -33,6 +33,7 @@ SPECS: dict[str, tuple[str, str, str]] = {
     "camera_count": ("Rear cameras", "", "Camera"),
     "optical_zoom_x": ("Optical zoom", "x", "Camera"),
     "has_ois": ("Optical stabilisation", "bool", "Camera"),
+    "front_camera_mp": ("Front camera", "MP", "Camera"),
     "battery_mah": ("Battery", "mAh", "Battery"),
     "battery_wh": ("Battery", "Wh", "Battery"),
     "charging_w": ("Charging", "W", "Battery"),
@@ -48,6 +49,13 @@ SPECS: dict[str, tuple[str, str, str]] = {
     "release_year": ("Released", "", "Other"),
     "expert_score": ("Expert review score", "/100", "Reviews"),
     "benchmark_score": ("Benchmark", "", "Reviews"),
+    "review_design": ("Reviewed design & build", "/10", "Reviews"),
+    "review_display": ("Reviewed display quality", "/10", "Reviews"),
+    "review_performance": ("Reviewed performance", "/10", "Reviews"),
+    "review_software": ("Reviewed software experience", "/10", "Reviews"),
+    "review_cameras": ("Reviewed camera quality", "/10", "Reviews"),
+    "review_battery": ("Reviewed battery life", "/10", "Reviews"),
+    "review_value": ("Reviewed value for money", "/10", "Reviews"),
 }
 
 USES: dict[str, tuple[str, str]] = {

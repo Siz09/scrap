@@ -9,3 +9,7 @@ venv/
 /dist/
 web/node_modules/
 .env
+.claude/
+.impeccable/
+.serena/
+.mcp.json

@@ -197,6 +197,8 @@ def _explain(r: Ranked, needs: Needs, unverified: list[str], pool_size: int,
     local = p.local_offers(needs.in_stock_only)
     if local and not any(o.official for o in local):
         warnings.append("no seller confirmed as official/authorised: check warranty before paying")
+    if local and all(o.in_stock is False for o in local):
+        warnings.append("out of stock at every seller we found; price shown is the last one seen")
     ref, best = p.reference_price_npr, p.best_price
     if ref and best and best > ref * 1.3:
         warnings.append(f"Nepal price is {best / ref - 1:.0%} above the international reference (before import costs)")

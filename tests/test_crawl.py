@@ -318,6 +318,15 @@ def test_sources_scrape_top_to_bottom_and_recent_checks_are_not_repeated():
     assert recently_checked(entries)
 
 
+def test_never_scraped_finds_sources_with_no_completed_scrape():
+    from devicescout.jobs import _save_status, never_scraped
+
+    entries = [{"name": "hukut"}, {"name": "brother-mart"}, {"name": "new-store"}]
+    _save_status("hukut", last_scraped_at="2020-01-01T00:00:00+00:00")
+    _save_status("brother-mart", scrape_running=True)   # started but never finished: still "never scraped"
+    assert [e["name"] for e in never_scraped(entries)] == ["brother-mart", "new-store"]
+
+
 def test_product_group_variants_become_separate_prices():
     """hukut.com product pages: schema.org ProductGroup with one Product per storage option."""
     from devicescout.sources import GenericSource, SiteConfig
@@ -353,6 +362,102 @@ def test_js_shell_and_non_product_pages_are_recognised():
     assert src._looks_like_product("https://itti.com.np/product/asus-zenbook-14-um3406ga-price-nepal")
     assert not src._looks_like_product("https://itti.com.np/about-itti-pvt-ltd")
     assert not src._looks_like_product("https://itti.com.np/itti-terms-and-conditions")
+
+
+def test_spec_table_embedded_as_escaped_html_in_a_script_payload_is_still_read():
+    # itti (a Next.js store) never puts its spec table in the rendered DOM: the table only
+    # exists as JSON-escaped HTML inside a script payload (a product description field), so
+    # the ordinary <table>/<div> scan finds nothing -- even after browser rendering.
+    from devicescout.sources.generic import _embedded_table_specs
+
+    real_table = ("<table><tbody>"
+                  "<tr><td>Installed RAM</td><td>16GB DDR4 2933MHz</td></tr>"
+                  '<tr><td colspan="2">Display</td></tr>'
+                  "<tr><td>Refresh Rate</td><td>120Hz</td></tr>"
+                  "</tbody></table>")
+    # Next.js escapes '<'/'>'/'"' when it inlines HTML as a JSON string in a script payload.
+    escaped = real_table.replace("<", chr(92) + "u003c").replace(">", chr(92) + "u003e").replace('"', chr(92) + '"')
+    payload = '26:["$","$L34",null,{"summary":"' + escaped + '"}]'
+
+    # A real fetch Response's .body is raw bytes, untouched by any HTML re-parsing (unlike
+    # Selector.body, which re-serializes the parsed DOM and would unescape < along the way).
+    class RawBytesPage:
+        body = f"<html><body><script>{payload}</script></body></html>".encode()
+
+    specs = _embedded_table_specs(RawBytesPage())
+    assert specs == {"Installed RAM": "16GB DDR4 2933MHz", "Refresh Rate": "120Hz"}
+
+
+def test_canonical_folds_www_onto_whichever_host_is_configured():
+    # oliz-store links to itself under both 'olizstore.com' and 'www.olizstore.com'; without
+    # folding these together the site walk fetches (and redirect-hops) every page twice.
+    from devicescout.sources import GenericSource, SiteConfig
+
+    bare = GenericSource(SiteConfig(name="s", base_url="https://olizstore.com"))
+    assert bare._canonical("https://www.olizstore.com/p/x", True) == \
+        bare._canonical("https://olizstore.com/p/x", True) == "https://olizstore.com/p/x"
+
+    www = GenericSource(SiteConfig(name="s", base_url="https://www.olizstore.com"))
+    assert www._canonical("https://olizstore.com/p/x", True) == \
+        www._canonical("https://www.olizstore.com/p/x", True) == "https://www.olizstore.com/p/x"
+
+    # A different host entirely (an external link) is left alone, not folded onto the base.
+    assert bare._canonical("https://other-site.com/p/x", True) == "https://other-site.com/p/x"
+
+
+def test_rumour_post_is_not_parsed_as_a_product():
+    # gadgetbyte reuses '-price-in-nepal' URL slugs and NewsArticle schema for both real launch
+    # pages and unreleased-phone rumour posts; only the headline wording tells them apart. A
+    # rumour post has no real price of its own, so the 'Rs. X somewhere in the prose' last-resort
+    # price grab was picking up a different phone's price entirely.
+    from devicescout.sources import GenericSource, SiteConfig
+
+    rumour = FakePage(
+        "<html><body><script type='application/ld+json'>{\"@type\": \"NewsArticle\"}</script>"
+        "<h1>RedMagic 12 Pro+ Teased With 0.96mm Bezels and a Lighter Build!</h1>"
+        "<p>A cheaper alternative is available under Rs. 30,000 for now.</p></body></html>",
+        "https://www.gadgetbytenepal.com/redmagic-12-pro-plus-price-in-nepal/",
+    )
+    src = GenericSource(SiteConfig(name="gadgetbyte", base_url="https://www.gadgetbytenepal.com",
+                                   region="np", price_from_text=True))
+    assert src.parse(rumour) is None
+
+    real = FakePage(
+        "<html><body><script type='application/ld+json'>{\"@type\": \"NewsArticle\"}</script>"
+        "<h1>Samsung Galaxy A56 5G Price in Nepal, Specs &amp; Availability</h1>"
+        "<p>The price of Galaxy A56 5G in Nepal is Rs. 57,999.</p></body></html>",
+        "https://www.gadgetbytenepal.com/samsung-galaxy-a56-price-in-nepal/",
+    )
+    p = src.parse(real)
+    assert p is not None and p.name.startswith("Samsung Galaxy A56")
+
+
+def test_expert_score_breakdown_is_extracted_per_category():
+    # gadgetbyte scores reviews per category (Design, Display, Performance, ...), each out of 10,
+    # instead of publishing one schema.org AggregateRating -- this is the only source of
+    # expert_score for it, so it must survive being pulled out of plain divs, not JSON-LD. Each
+    # category also becomes its own review_* spec, not just folded into one average.
+    from devicescout.sources import GenericSource, SiteConfig
+    from devicescout.sources.generic import parse_expert_score_breakdown
+
+    def block(label: str, score: str) -> str:
+        return (f'<div class="order-2 flex-col gap-2"><p>{label}</p><p>{score}<!-- -->/10</p></div>')
+
+    page = FakePage(
+        "<html><body><script type='application/ld+json'>{\"@type\": \"NewsArticle\"}</script>"
+        "<h1>Some Phone Review</h1><h2>Expert Score Breakdown</h2>"
+        + block("Design and build", "8.2") + block("Display", "8.6") + block("Performance", "7.9")
+        + "</body></html>",
+        "https://www.gadgetbytenepal.com/product/x",
+    )
+    assert parse_expert_score_breakdown(page) == [
+        ("Design and build", 8.2), ("Display", 8.6), ("Performance", 7.9)]
+
+    src = GenericSource(SiteConfig(name="gadgetbyte", base_url="https://www.gadgetbytenepal.com",
+                                   region="np-ref", price_from_text=True))
+    specs = src.parse(page).specs
+    assert specs["review_design"] == 8.2 and specs["review_display"] == 8.6 and specs["review_performance"] == 7.9
+    assert specs["expert_score"] == round((8.2 + 8.6 + 7.9) / 3 * 10, 1)
 
 
 def test_sitemap_of_category_pages_seeds_the_site_walk():

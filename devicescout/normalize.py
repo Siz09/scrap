@@ -182,7 +182,12 @@ def normalize_specs(raw: dict[str, str], category: Category) -> dict[str, Any]:
             continue
         v = value.strip()
         # Connectivity flags can sit under any label ("Network / Technology", "Connectivity").
-        is_conn = _match(label, "network") or _match(label, "nfc") or _match(label, "gps")
+        # A sectioned label ("Connectivity / USB") carries the section name as a prefix, so the
+        # generic "connectivity" alias would otherwise swallow USB/Bluetooth/WLAN rows too and
+        # stop them ever reaching the ports check below; a label that already looks like a port
+        # is more specific evidence than that prefix, so it wins instead.
+        is_conn = _match(label, "nfc") or _match(label, "gps") or \
+            (_match(label, "network") and not _match(label, "ports"))
         if is_conn:
             if re.search(r"\b5G\b", v):
                 specs["has_5g"] = True
@@ -229,6 +234,11 @@ def normalize_specs(raw: dict[str, str], category: Category) -> dict[str, Any]:
             for k, val in parse_camera(v).items():
                 if k not in specs or (isinstance(val, (int, float)) and val > specs[k]):
                     specs[k] = val
+        elif (_match(label, "camera") and category in (Category.PHONE, Category.TABLET)
+              and re.search(r"selfie|front", label, re.I)):
+            mps = [_num(x) for x in re.findall(_NUM + r"\s*MP", v, re.I)]
+            if mps:
+                specs["front_camera_mp"] = max([*mps, specs.get("front_camera_mp", 0)])
         elif _match(label, "weight"):
             if (g := _first(_NUM + r"\s*g\b", v)):
                 specs["weight_g"] = g
@@ -325,7 +335,7 @@ def categorize(name: str, hint: str | None = None) -> Category:
 # --- Identity / dedup ------------------------------------------------------
 
 _NOISE = re.compile(
-    r"\b(\d+\s*(gb|tb)(\s*ram)?|5g|4g|lte|wi-?fi|unlocked|dual sim|renewed|refurbished|"
+    r"\b(\d+\s*(gb|tb)(\s*ram)?|5g|4g|lte|wi-?fi|unlocked|dual sim|renewed|refurbished|inch(?:es)?|"
     r"black|white|blue|green|red|gray|grey|silver|gold|titanium|graphite|midnight|"
     r"starlight|violet|purple|pink|cream|lavender|phantom|onyx|natural|desert|obsidian|porcelain|"
     r"hazel|peony|rose|mint|sage|charcoal|jade|amber|marble|space|ultramarine|teal|yellow|orange)\b",
@@ -410,6 +420,8 @@ def model_name(name: str, category=None) -> str:
     if cat not in _PITCH_CATEGORIES:
         return name
     name = re.sub(r"\((20\d\d)\)", r"\1", name)          # a year in brackets is part of the model
+    # Nothing/CMF name the model itself in brackets: 'Phone (3)', '(3a)', '(4b)' -- not spec junk.
+    name = re.sub(r"\((\d{1,2}[a-z]?)\)", r"\1", name, flags=re.I)
     cut = len(name)
     m = _PITCH.search(name)
     if m:
@@ -421,7 +433,10 @@ def model_name(name: str, category=None) -> str:
     if len(head.split()) < 2:                               # keep at least brand + model
         return name
     head = re.sub(r"(?:\s+(?:smart\s*phone|mobile(?:\s+phone)?|phone|tablet|smart\s*watch|dual\s+sim|"
-                  r"(?:true\s+)?wireless(?:\s+(?:earbuds|earphones|headphones))?|earbuds|earphones|tws))+$", "",
+                  r"(?:true\s+)?wireless(?:\s+(?:earbuds|earphones|headphones))?|earbuds?|earphones|tws|"
+                  r"open[- ]ear|in\s+ear|nc|anc|bluetooth|gps|fitness|tracker|aluminium|by\s+\w+|"
+                  r"tuned\s+by\s+\w+|low\s+gaming\s+latency|"
+                  r"military\s+grade\s*&?\s*advanced\s+health\s+sensors))+$", "",
                   head, flags=re.I)
     return head.strip() or name
 

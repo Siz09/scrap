@@ -272,7 +272,7 @@ export default function Sources() {
           )}
           {busy && p.total ? (
             <div className="progress" role="progressbar" aria-valuemin={0} aria-valuemax={p.total} aria-valuenow={p.done ?? 0}>
-              <div className="progress-bar" style={{ width: `${pct}%` }} />
+              <div className="progress-bar" style={{ transform: `scaleX(${pct / 100})` }} />
               <span className="progress-label">
                 {p.done ?? 0} of {p.total} done{p.current ? ` · now: ${p.current}` : ""}
               </span>

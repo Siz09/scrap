@@ -186,6 +186,13 @@ def recently_checked(entries: list[dict], hours: float = 12) -> bool:
     return True
 
 
+def never_scraped(entries: list[dict]) -> list[dict]:
+    """Sources with no completed scrape yet: safe to auto-scrape on startup without
+    redoing work a restart shouldn't repeat."""
+    status = load_status()
+    return [e for e in entries if not status.get(e["name"], {}).get("last_scraped_at")]
+
+
 def refresh_rates(store, log: Log = print) -> None:
     """Today's exchange rates, saved for the website: every foreign price is converted with them."""
     from .currency import apply_stored, fetch_rates
@@ -276,6 +283,18 @@ def execute(job: dict, db_path, sources_path, fetcher_factory=Fetcher) -> str:
         # Long jobs (a whole-site scrape takes hours): keep telling the website the scraper is up.
         store.set_kv("worker_heartbeat", _now())
 
+    # log()/progress() only fire on source/product milestones, which a slow single-source
+    # crawl (redirects, retries, a listing walk before the first product lands) can space out
+    # past the website's 90s staleness check -- ticking here keeps the heartbeat live regardless.
+    heartbeat_stop = threading.Event()
+    HEARTBEAT_SECONDS = 20
+
+    def tick_heartbeat() -> None:
+        while not heartbeat_stop.wait(HEARTBEAT_SECONDS):
+            alive()
+
+    threading.Thread(target=tick_heartbeat, daemon=True, name="job-heartbeat").start()
+
     def log(line: str) -> None:
         if store.job(job["id"])["cancel_requested"]:
             cancel.set()
@@ -304,6 +323,7 @@ def execute(job: dict, db_path, sources_path, fetcher_factory=Fetcher) -> str:
         log(f"failed: {type(ex).__name__}: {ex}")
         status = "failed"
     finally:
+        heartbeat_stop.set()
         store.finish_job(job["id"], status)
         store.close()
     return status

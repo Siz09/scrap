@@ -153,6 +153,21 @@ def test_chip_tier():
     assert chip_tier("mystery chip") is None
 
 
+def test_gadgetbyte_review_scores_shift_the_matching_profile():
+    # gadgetbyte's per-category review scores (review_cameras, review_performance, ...) should
+    # move the profile they're most relevant to, not just sit in the spec sheet unused.
+    from devicescout.models import Product
+
+    same_specs = dict(chip_tier=7, optical_zoom_x=2, has_ois=True, camera_count=3,
+                      storage_gb=256, main_camera_mp=50, expert_score=80)
+    good_camera = Product(source="t", url="u1", name="Good Camera Phone", category=Category.PHONE,
+                          specs={**same_specs, "review_cameras": 9.5})
+    bad_camera = Product(source="t", url="u2", name="Bad Camera Phone", category=Category.PHONE,
+                         specs={**same_specs, "review_cameras": 3.0})
+    ranked = rank([good_camera, bad_camera], "photography", Category.PHONE)
+    assert ranked[0].product.name == "Good Camera Phone"
+
+
 def test_store_merges_sources_with_spec_priority(tmp_path):
     store = Store(tmp_path / "t.db")
     k1 = store.upsert(GSMArenaSource().parse(page("gsmarena_s24_ultra.html")))
@@ -237,6 +252,24 @@ def test_processor_is_the_chip_not_the_core_layout():
            "Platform / Chipset": "Qualcomm SM7635 Snapdragon 7s Gen 3 (4 nm)"}
     assert normalize_specs(raw, Category.PHONE)["chipset"].startswith("Qualcomm SM7635")
     assert normalize_specs({"CPU": "Octa-core 2.2 GHz"}, Category.PHONE)["chipset"] == "Octa-core 2.2 GHz"
+
+
+def test_front_camera_and_usb_survive_a_sectioned_gsmarena_style_sheet():
+    from devicescout.normalize import normalize_specs
+    raw = {
+        "Front Camera / Dual": "50 MP, f/2.0, (wide) 2 MP, f/2.4, (depth)",
+        "Back Camera / Triple": "200 MP, f/1.9, (wide), OIS 50 MP, f/2.4, (telephoto), 3x optical zoom",
+        # "Connectivity /" is also the generic network-flags alias; USB/Bluetooth rows under it
+        # must still reach the ports check instead of being swallowed as an empty 5G/NFC/GPS row.
+        "Connectivity / USB": "USB Type-C 2.0, OTG",
+        "Connectivity / NFC": "Yes",
+        "Connectivity / Positioning": "GPS, GALILEO, GLONASS",
+    }
+    specs = normalize_specs(raw, Category.PHONE)
+    assert specs["front_camera_mp"] == 50.0
+    assert specs["main_camera_mp"] == 200.0          # rear camera still wins its own key
+    assert specs["ports"] == "USB Type-C 2.0, OTG"
+    assert specs["has_nfc"] is True and specs["has_gps"] is True   # unaffected by the ports carve-out
 
 
 @pytest.mark.parametrize("cat,a,b", [

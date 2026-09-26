@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
 
+from scrapling.parser import Selector
+
 from ..models import Offer, Product
 from ..normalize import finalize, parse_label_lines, parse_price, parse_variant
 from .backends import RateLimited, NotFound
@@ -82,6 +84,20 @@ def jsonld_objects(page) -> list[dict]:
         except (json.JSONDecodeError, TypeError):
             continue
     return out
+
+
+_RUMOR_TITLE = re.compile(
+    r"\b(rumou?r(?:ed|s)?|leak(?:ed|s)?|teased?|tipped|spotted|speculat\w*|"
+    r"what we know so far|expected to launch|coming soon)\b", re.I)
+
+
+def _is_rumor(title: str) -> bool:
+    """A news/rumour post about an unreleased device, not a product page -- gadgetbyte reuses
+    '-price-in-nepal' URL slugs for both and marks both as NewsArticle, so URL and schema type
+    can't tell them apart. The headline's own wording can: a real listing says 'Price in Nepal,
+    Specs & Availability'; a rumour says 'Teased With ...' or 'What We Know So Far'. Without this,
+    the 'grab any Rs. figure mentioned in the prose' last resort grabs some other phone's price."""
+    return bool(_RUMOR_TITLE.search(title))
 
 
 def extract_jsonld_product(page) -> dict | None:
@@ -212,11 +228,66 @@ def extract_spec_rows(page, cfg: SiteConfig) -> dict[str, str]:
                     raw.setdefault(label.rstrip(":"), value)
         for label, value in _div_spec_rows(page):
             raw.setdefault(label, value)
+        for label, value in _embedded_table_specs(page).items():
+            raw.setdefault(label, value)
     # Variant price rows ("12/256GB | Rs. 98,499") are prices, not specifications.
     return {k: v for k, v in raw.items() if not _PRICE_ONLY.fullmatch(v.strip())}
 
 
+_ESCAPED_TABLE = re.compile(r"\\u003ctable\b.*?\\u003c/table\\u003e", re.I | re.S)
+_ESCAPED_UNICODE = re.compile(r"\\u([0-9a-fA-F]{4})")
+
+
+def _unescape_json_html(s: str) -> str:
+    s = _ESCAPED_UNICODE.sub(lambda m: chr(int(m.group(1), 16)), s)
+    return s.replace('\\"', '"').replace("\\/", "/")
+
+
+def _embedded_table_specs(page) -> dict[str, str]:
+    """Some Next.js stores (itti) never render their spec table into the page: it lives only as
+    JSON-escaped HTML inside a script payload (a product description field), so the usual DOM
+    table/div scan finds nothing even in the browser. Pull it out of the raw response instead."""
+    body = getattr(page, "body", b"") or b""
+    text = body.decode("utf-8", "ignore") if isinstance(body, bytes) else str(body)
+    raw: dict[str, str] = {}
+    for m in _ESCAPED_TABLE.finditer(text):
+        try:
+            fragment = Selector(_unescape_json_html(m.group()))
+        except Exception:
+            continue
+        for row in fragment.css("tr"):
+            cells = row.css("td")
+            if len(cells) != 2:
+                continue
+            label, value = text_of(cells[0]), text_of(cells[1])
+            if label and value and len(label) < 60:
+                raw.setdefault(label.rstrip(":"), value)
+    return raw
+
+
 _PRICE_ONLY = re.compile(r"(?:Rs\.?|NPR|रु|\$|USD|₹)\s?[\d,]+(?:\.\d+)?(?:\s*/-)?", re.I)
+
+
+_SCORE_OUT_OF_10 = re.compile(r"^(\d+(?:\.\d+)?)\s*/\s*10\Z")
+
+# gadgetbyte's fixed review rubric (label substring, lowercased) -> our canonical spec key.
+_SCORE_CATEGORIES = (
+    ("design", "review_design"), ("display", "review_display"), ("performance", "review_performance"),
+    ("software", "review_software"), ("camera", "review_cameras"), ("battery", "review_battery"),
+    ("value", "review_value"),
+)
+
+
+def parse_expert_score_breakdown(page) -> list[tuple[str, float]]:
+    """gadgetbyte scores each review across categories (Design, Display, Performance, Software,
+    Cameras, Battery life, Value for money), each out of 10, instead of publishing one aggregate
+    rating as schema.org Review/AggregateRating. Returns [(category label, score out of 10), ...]."""
+    scores: list[tuple[str, float]] = []
+    for block in page.css("div.order-2.flex-col.gap-2"):
+        texts = [t for t in (text_of(p) for p in block.css("p")) if t]
+        if len(texts) == 2 and (m := _SCORE_OUT_OF_10.match(texts[1].strip())):
+            scores.append((texts[0].strip(), float(m.group(1))))
+    return scores
 
 
 def _script_heavy(page) -> bool:
@@ -443,15 +514,22 @@ class GenericSource(Source):
 
     def _canonical(self, url: str, product: bool) -> str:
         """One URL per page: products lose their query string; listings keep only pagination
-        (?page=2), not sort/filter variants that would multiply the same listing endlessly."""
+        (?page=2), not sort/filter variants that would multiply the same listing endlessly.
+        A site linking to itself under both 'www.x.com' and 'x.com' (oliz-store does) would
+        otherwise look like two different pages and get fetched, redirected, and parsed twice.
+        Whichever variant is configured as base_url is the one that doesn't redirect, so links
+        differing only by 'www.' are folded onto it rather than guessed at."""
         u = urlparse(url.split("#")[0])
+        base_netloc = urlparse(self._base()).netloc
+        same_site = u.netloc.removeprefix("www.") == base_netloc.removeprefix("www.")
+        netloc = base_netloc if same_site else u.netloc
         if product:
             query = ""
         else:
             keep = [kv for kv in u.query.split("&") if kv and kv.split("=")[0].lower() in self._PAGE_PARAMS]
             query = "&".join(sorted(keep))
         path = u.path.rstrip("/") or "/"
-        return f"{u.scheme}://{u.netloc}{path}" + (f"?{query}" if query else "")
+        return f"{u.scheme}://{netloc}{path}" + (f"?{query}" if query else "")
 
     def _site_crawl(self, fetcher: Fetcher, limit: int, skip: set[str] = frozenset(),
                     seeds: list[str] = ()) -> Iterator[Product]:
@@ -678,6 +756,8 @@ class GenericSource(Source):
             ld = review["itemReviewed"]
         h1 = text_of(page.css("h1").first)
         og_title = page.css("meta[property='og:title']::attr(content)").get() or ""
+        if not ld and _is_rumor(h1 or og_title):
+            return None
         embedded = None if ld.get("offers") else extract_embedded_product(page, h1 or og_title)
         name = ld.get("name") or (
             text_of(page.css(self.cfg.name_css).first) if self.cfg.name_css else ""
@@ -752,6 +832,13 @@ class GenericSource(Source):
                 specs["expert_score"] = round(float(rr["ratingValue"]) / best * 100, 1)
             except (KeyError, TypeError, ValueError):
                 pass
+        breakdown = parse_expert_score_breakdown(page)
+        for label, score in breakdown:
+            key = next((k for needle, k in _SCORE_CATEGORIES if needle in label.lower()), None)
+            if key:
+                specs[key] = score
+        if "expert_score" not in specs and breakdown:
+            specs["expert_score"] = round(sum(s for _, s in breakdown) / len(breakdown) * 10, 1)
 
         breadcrumb = " ".join(text_of(a) for a in page.css(self.cfg.breadcrumb_css))
         image = ld.get("image")

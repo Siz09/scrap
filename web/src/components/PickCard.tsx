@@ -10,6 +10,12 @@ function confidenceLabel(c: number): [string, string] {
   return ["Low", "low"];
 }
 
+function scoreClass(score: number): string {
+  if (score >= 70) return "good";
+  if (score >= 40) return "";
+  return "low";
+}
+
 export default function PickCard({ pick, rank, tone, savings }: {
   pick: Pick;
   rank?: number;
@@ -41,7 +47,7 @@ export default function PickCard({ pick, rank, tone, savings }: {
             {savings != null && savings > 0 && <span className="badge good">Save {npr(savings)}</span>}
           </div>
         </div>
-        <div className="score" title="Fit for your needs, relative to the other devices compared">
+        <div className={`score ${scoreClass(score)}`} title="Fit for your needs, relative to the other devices compared">
           <svg viewBox="0 0 36 36" aria-hidden="true">
             <circle cx="18" cy="18" r="15.9" className="score-bg" />
             <circle cx="18" cy="18" r="15.9" className="score-fg" strokeDasharray={`${score} 100`} />

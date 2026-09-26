@@ -57,6 +57,46 @@ def test_canonical_key_handles_marketplace_titles():
         canonical_key("Samsung", "Samsung Galaxy A56") == "samsung galaxy a56"
 
 
+def test_canonical_key_keeps_nothings_bracketed_model_number():
+    # Nothing/CMF name the model in brackets ('Phone (3)', '(3a)', '(4b)'); a store title's own
+    # spec junk still gets cut around it. Each of these must stay a *different* key.
+    assert canonical_key("Nothing", "Nothing Phone (3) 50MP Quad Camera Snapdragon 8s Gen 4", "phone") == \
+        "nothing phone 3"
+    assert canonical_key("Nothing", "Nothing Phone (2a) 5G", "phone") == "nothing phone 2a"
+    assert canonical_key("Nothing", "Nothing Phone (2a) Plus", "phone") == "nothing phone 2a plus"
+    assert canonical_key("Nothing", "Nothing Phone (4b) 5G Smartphone", "phone") == "nothing phone 4b"
+    keys = {canonical_key("Nothing", t, "phone") for t in (
+        "Nothing Phone (2) 5G", "Nothing Phone (3) 50MP Quad Camera",
+        "Nothing Phone (3a) Pro 5000mAh Battery", "Nothing Phone (4a) 5G Smartphone",
+        "Nothing Phone (4b) 5G Smartphone")}
+    assert len(keys) == 5   # none collapsed into one another
+
+
+def test_canonical_key_ignores_marketing_tails_flagged_by_duplicates():
+    # 'devicescout duplicates' found these pairs as the same device under a longer store title.
+    same = [
+        ("Anker", "Soundcore K20i", "Soundcore K20i by Anker", "earbuds"),
+        ("Anker", "Soundcore R50i", "Soundcore R50i NC True Wireless Bluetooth", "earbuds"),
+        ("CMF", "CMF Buds 2 Plus", "CMF Buds 2 Plus Earbud", "earbuds"),
+        ("Huawei", "HUAWEI FreeClip 2", "HUAWEI FreeClip 2 Open-Ear", "earbuds"),
+        ("OnePlus", "OnePlus Nord Buds 3 Pro",
+         "OnePlus Nord Buds 3 Pro True Wireless in Ear Bluetooth", "earbuds"),
+        ("Ultima", "Ultima Aura ANC", "Ultima Aura ANC True Wireless Earbuds Tuned by Sony", "earbuds"),
+        ("Ultima", "Ultima Boom 141", "Ultima Boom 141 ANC Low Gaming Latency", "earbuds"),
+        ("Apple", "Apple MacBook Air M1 13", "Apple MacBook Air M1 13 inch", "laptop"),
+        ("Huawei", "Huawei Band 11", "HUAWEI Band 11 Aluminium Fitness Tracker", "smartwatch"),
+        ("Zeblaze", "Zeblaze Ares", "Zeblaze Ares GPS", "smartwatch"),
+        ("Zeblaze", "Zeblaze Vibe 7 Pro",
+         "Zeblaze Vibe 7 Pro Military Grade & Advanced Health Sensors", "smartwatch"),
+    ]
+    for brand, a, b, cat in same:
+        assert canonical_key(brand, a, cat) == canonical_key(brand, b, cat), (a, b)
+
+    # A real step-up variant, not marketing text: must stay a separate device.
+    assert canonical_key("KICK", "KICK Phantom Buds X", "earbuds") != \
+        canonical_key("KICK", "Kick Phantom Buds X Elite", "earbuds")
+
+
 # --- sources -----------------------------------------------------------------
 
 def test_daraz_listing_json():
@@ -194,6 +234,22 @@ def test_advise_unknown_must_have_is_flagged_not_dropped(catalogue):
     a = advise(catalogue, Needs(category=Category.PHONE, budget_max=60000, must={"has_nfc": ("==", True)}))
     assert len(a.picks) == 3
     assert all(any("could not confirm: NFC" in w for w in p.warnings) for p in a.picks)
+
+
+def test_advise_warns_when_out_of_stock_everywhere():
+    out_of_stock = Product(source="t", url="u", name="Ghost Phone", brand="Ghost", category=Category.PHONE,
+                           specs={"os": "android", "battery_mah": 5000},
+                           offers=[Offer("shop1", "u1", 40000, "NPR", in_stock=False, seller="Shop1"),
+                                   Offer("shop2", "u2", 41000, "NPR", in_stock=False, seller="Shop2")])
+    a = advise([out_of_stock], Needs(category=Category.PHONE, budget_max=60000))
+    assert any("out of stock at every seller" in w for w in a.picks[0].warnings)
+
+    in_stock_somewhere = Product(source="t", url="u", name="Live Phone", brand="Live", category=Category.PHONE,
+                                 specs={"os": "android", "battery_mah": 5000},
+                                 offers=[Offer("shop1", "u1", 40000, "NPR", in_stock=False, seller="Shop1"),
+                                         Offer("shop2", "u2", 41000, "NPR", in_stock=True, seller="Shop2")])
+    a = advise([in_stock_somewhere], Needs(category=Category.PHONE, budget_max=60000))
+    assert not any("out of stock" in w for w in a.picks[0].warnings)
 
 
 def test_advise_value_pick(catalogue):

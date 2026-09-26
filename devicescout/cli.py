@@ -306,22 +306,46 @@ def cmd_schedule(args) -> None:
         status = execute(job, args.db, args.sources, fetcher_factory=Fetcher)   # prints its log as it goes
         say(f"{job['kind']} job {job['id']} {status}")
 
-    from .jobs import recently_checked, select_entries
+    from .jobs import never_scraped, recently_checked, select_entries
+    all_entries = select_entries(args.sources, [])
     first = ["scrape"]
     if args.check_first:
-        if recently_checked(select_entries(args.sources, [])):
+        if recently_checked(all_entries):
             say("all sources were checked in the last 12 h; going straight to scraping")
         else:
             first = ["check", "scrape"]
     next_run = time.monotonic() + args.start_in
     if args.start_in:
         say(f"first scheduled run in {args.start_in / 3600:.1f} h; watching for jobs from the website")
+    # A restart shouldn't redo scrapes that already have data: the startup run only auto-scrapes
+    # sources with none yet. Already-scraped sources wait for the next `--every` interval or a
+    # manual Check/Update from the website.
+    startup_scrape_names = [e["name"] for e in never_scraped(all_entries)]
+    startup = True
     # One job at a time, oldest first: the scheduled run and anything started from the website
     # share one line, so only one website is ever being scraped.
     scheduled: list[str] = []          # ids of the scheduled run's jobs not finished yet
     while not stop.is_set():
         if not scheduled and next_run is not None and time.monotonic() >= next_run:
-            scheduled = [store.enqueue_job(k, [], args.limit, origin="schedule")["id"] for k in first]
+            kinds = list(first)
+            names_by_kind = {}
+            if startup:
+                if startup_scrape_names:
+                    names_by_kind["scrape"] = startup_scrape_names
+                    say(f"startup: scraping {len(startup_scrape_names)} source(s) with no data yet "
+                        f"({', '.join(startup_scrape_names)}); already-scraped sources are left alone")
+                else:
+                    kinds = [k for k in kinds if k != "scrape"]
+                    say("startup: every source already has data; skipping the startup scrape "
+                        "(use Update on the Data sources page, or wait for the next scheduled run)")
+                startup = False
+            if kinds:
+                scheduled = [store.enqueue_job(k, names_by_kind.get(k, []), args.limit, origin="schedule")["id"]
+                             for k in kinds]
+            else:
+                next_run = time.monotonic() + args.every + random.uniform(0, args.jitter)
+                say(f"next scheduled scrape in {(next_run - time.monotonic()) / 3600:.1f} h; "
+                    "watching for jobs from the website")
             first = ["scrape"]
         job = store.claim_job()
         if job:

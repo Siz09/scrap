@@ -26,7 +26,9 @@ docker compose exec scraper devicescout <command>
 ```
 
 Services (`docker-compose.yml`): `web`, `scraper` (`devicescout schedule --every ${SCRAPE_EVERY:-6h}`,
-scrapes straight away on start), `db` (postgres:17 with pg_stat_statements, lz4). Every port listens on
+on start scrapes only sources with no data yet — a restart doesn't repeat scrapes that already ran;
+already-scraped sources wait for the next `--every` interval or a manual Update), `db` (postgres:17
+with pg_stat_statements, lz4). Every port listens on
 127.0.0.1 only. The DB port defaults to **55432**, because 5433 is taken by another project on the owner's
 PC. The owner's own `.env` once overrode it to 5433, so check `.env` if the port collides. Volumes:
 `data` (sources.json, image cache), `pgdata`.

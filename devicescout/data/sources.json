@@ -8,6 +8,20 @@
   ],
   "sources": [
     {
+      "name": "gadgetbyte",
+      "type": "jsonld",
+      "enabled": true,
+      "role": "reference",
+      "region": "np-ref",
+      "verified": false,
+      "base_url": "https://www.gadgetbytenepal.com",
+      "url_include": "price-in-nepal",
+      "url_exclude": "/(category|tag|author|page)/",
+      "price_from_text": true,
+      "currency": "NPR",
+      "notes": "Nepal's main tech site: official launch prices and specs for each model (not a shop). Pages like /samsung-galaxy-a56-price-in-nepal/."
+    },
+    {
       "name": "hukut",
       "type": "auto",
       "enabled": true,
@@ -20,6 +34,31 @@
         "https://hukut.com/mobile-phones",
         "https://hukut.com/laptops"
       ]
+    },
+    {
+      "name": "gsmarena",
+      "type": "gsmarena",
+      "enabled": true,
+      "role": "specs",
+      "region": "intl",
+      "verified": false,
+      "brands": [
+        "samsung",
+        "apple",
+        "xiaomi",
+        "oneplus",
+        "google",
+        "oppo",
+        "vivo",
+        "realme",
+        "honor",
+        "motorola",
+        "nothing",
+        "huawei"
+      ],
+      "pages": 2,
+      "notes": "Most complete phone/tablet/watch spec database. Specs only, no prices.",
+      "delay": 4
     },
     {
       "name": "brother-mart",
@@ -41,7 +80,7 @@
       "role": "offers",
       "region": "np",
       "verified": false,
-      "base_url": "https://olizstore.com",
+      "base_url": "https://www.olizstore.com",
       "notes": "Premium electronics, Apple lineup."
     },
     {
@@ -105,20 +144,6 @@
       "base_url": "https://www.sastodeal.com"
     },
     {
-      "name": "gadgetbyte",
-      "type": "jsonld",
-      "enabled": true,
-      "role": "reference",
-      "region": "np-ref",
-      "verified": false,
-      "base_url": "https://www.gadgetbytenepal.com",
-      "url_include": "price-in-nepal",
-      "url_exclude": "/(category|tag|author|page)/",
-      "price_from_text": true,
-      "currency": "NPR",
-      "notes": "Nepal's main tech site: official launch prices and specs for each model (not a shop). Pages like /samsung-galaxy-a56-price-in-nepal/."
-    },
-    {
       "name": "pricenepal",
       "type": "jsonld",
       "enabled": true,
@@ -140,31 +165,6 @@
       "base_url": "https://www.nepaltechhub.com",
       "price_from_text": true,
       "currency": "NPR"
-    },
-    {
-      "name": "gsmarena",
-      "type": "gsmarena",
-      "enabled": true,
-      "role": "specs",
-      "region": "intl",
-      "verified": false,
-      "brands": [
-        "samsung",
-        "apple",
-        "xiaomi",
-        "oneplus",
-        "google",
-        "oppo",
-        "vivo",
-        "realme",
-        "honor",
-        "motorola",
-        "nothing",
-        "huawei"
-      ],
-      "pages": 2,
-      "notes": "Most complete phone/tablet/watch spec database. Specs only, no prices.",
-      "delay": 4
     },
     {
       "name": "notebookcheck",

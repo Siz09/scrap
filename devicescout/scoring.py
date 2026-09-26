@@ -22,23 +22,25 @@ Weights = list[tuple[str, float, bool]]
 
 PROFILES: dict[str, dict[Category, Weights]] = {
     "photography": {
-        Category.PHONE: [("main_camera_mp", 0.10, True), ("optical_zoom_x", 0.25, True),
-                         ("has_ois", 0.15, True), ("camera_count", 0.10, True),
-                         ("storage_gb", 0.10, True), ("chip_tier", 0.10, True),
-                         ("expert_score", 0.20, True)],
+        Category.PHONE: [("main_camera_mp", 0.08, True), ("optical_zoom_x", 0.20, True),
+                         ("has_ois", 0.12, True), ("camera_count", 0.08, True),
+                         ("storage_gb", 0.07, True), ("chip_tier", 0.08, True),
+                         ("expert_score", 0.12, True), ("review_cameras", 0.25, True)],
         Category.TABLET: [("main_camera_mp", 0.5, True), ("display_size_in", 0.5, True)],
     },
     "gaming": {
-        Category.PHONE: [("chip_tier", 0.35, True), ("benchmark_score", 0.15, True),
-                         ("refresh_rate_hz", 0.20, True), ("ram_gb", 0.10, True),
-                         ("battery_mah", 0.10, True), ("charging_w", 0.10, True)],
+        Category.PHONE: [("chip_tier", 0.28, True), ("benchmark_score", 0.12, True),
+                         ("refresh_rate_hz", 0.15, True), ("ram_gb", 0.08, True),
+                         ("battery_mah", 0.08, True), ("charging_w", 0.08, True),
+                         ("review_performance", 0.21, True)],
         Category.LAPTOP: [("has_dedicated_gpu", 0.35, True), ("benchmark_score", 0.15, True),
                           ("refresh_rate_hz", 0.20, True), ("ram_gb", 0.15, True),
                           ("storage_gb", 0.10, True), ("chip_tier", 0.05, True)],
         Category.TABLET: [("chip_tier", 0.5, True), ("refresh_rate_hz", 0.3, True), ("ram_gb", 0.2, True)],
     },
     "battery": {
-        Category.PHONE: [("battery_mah", 0.6, True), ("charging_w", 0.3, True), ("weight_g", 0.1, False)],
+        Category.PHONE: [("battery_mah", 0.35, True), ("charging_w", 0.2, True), ("weight_g", 0.1, False),
+                         ("review_battery", 0.35, True)],
         Category.SMARTWATCH: [("battery_mah", 0.8, True), ("weight_g", 0.2, False)],
         Category.LAPTOP: [("battery_wh", 0.8, True), ("weight_g", 0.2, False)],
         Category.POWER_BANK: [("capacity_mah", 0.5, True), ("output_w", 0.35, True), ("weight_g", 0.15, False)],
@@ -50,15 +52,16 @@ PROFILES: dict[str, dict[Category, Weights]] = {
         Category.SMARTWATCH: [("weight_g", 0.6, False), ("battery_mah", 0.4, True)],
     },
     "display": {
-        Category.PHONE: [("resolution_px", 0.35, True), ("refresh_rate_hz", 0.35, True), ("display_size_in", 0.3, True)],
+        Category.PHONE: [("resolution_px", 0.25, True), ("refresh_rate_hz", 0.25, True), ("display_size_in", 0.2, True),
+                         ("review_display", 0.3, True)],
         Category.LAPTOP: [("resolution_px", 0.4, True), ("refresh_rate_hz", 0.3, True), ("display_size_in", 0.3, True)],
         Category.TABLET: [("resolution_px", 0.4, True), ("refresh_rate_hz", 0.3, True), ("display_size_in", 0.3, True)],
     },
     # Everyday use: social media, calls, video, a long day away from a charger.
     "everyday": {
-        Category.PHONE: [("battery_mah", 0.25, True), ("display_quality", 0.15, True), ("chip_tier", 0.15, True),
-                         ("storage_gb", 0.10, True), ("charging_w", 0.10, True), ("rating", 0.15, True),
-                         ("release_year", 0.10, True)],
+        Category.PHONE: [("battery_mah", 0.22, True), ("display_quality", 0.13, True), ("chip_tier", 0.13, True),
+                         ("storage_gb", 0.09, True), ("charging_w", 0.09, True), ("rating", 0.13, True),
+                         ("release_year", 0.09, True), ("review_software", 0.12, True)],
         Category.LAPTOP: [("battery_wh", 0.3, True), ("weight_g", 0.2, False), ("ram_gb", 0.2, True),
                           ("rating", 0.2, True), ("release_year", 0.1, True)],
         Category.TABLET: [("display_size_in", 0.3, True), ("battery_mah", 0.3, True), ("rating", 0.4, True)],
@@ -84,8 +87,8 @@ PROFILES: dict[str, dict[Category, Weights]] = {
     "content_creation": {
         Category.LAPTOP: [("has_dedicated_gpu", 0.25, True), ("ram_gb", 0.2, True), ("chip_tier", 0.2, True),
                           ("resolution_px", 0.15, True), ("storage_gb", 0.2, True)],
-        Category.PHONE: [("storage_gb", 0.25, True), ("has_ois", 0.2, True), ("chip_tier", 0.2, True),
-                         ("main_camera_mp", 0.15, True), ("expert_score", 0.2, True)],
+        Category.PHONE: [("storage_gb", 0.20, True), ("has_ois", 0.15, True), ("chip_tier", 0.18, True),
+                         ("main_camera_mp", 0.12, True), ("expert_score", 0.15, True), ("review_cameras", 0.20, True)],
         Category.TABLET: [("display_size_in", 0.3, True), ("chip_tier", 0.3, True), ("storage_gb", 0.4, True)],
     },
     "fitness": {
@@ -99,8 +102,9 @@ PROFILES: dict[str, dict[Category, Weights]] = {
     },
     # Will it still be good (and updated) in 3-5 years?
     "longevity": {
-        Category.PHONE: [("os_upgrades", 0.30, True), ("release_year", 0.20, True), ("chip_tier", 0.20, True),
-                         ("water_rating", 0.10, True), ("storage_gb", 0.10, True), ("ram_gb", 0.10, True)],
+        Category.PHONE: [("os_upgrades", 0.25, True), ("release_year", 0.18, True), ("chip_tier", 0.18, True),
+                         ("water_rating", 0.09, True), ("storage_gb", 0.09, True), ("ram_gb", 0.09, True),
+                         ("review_value", 0.12, True)],
         Category.TABLET: [("os_upgrades", 0.3, True), ("release_year", 0.25, True), ("chip_tier", 0.25, True),
                           ("storage_gb", 0.2, True)],
         Category.LAPTOP: [("chip_tier", 0.3, True), ("ram_gb", 0.25, True), ("release_year", 0.2, True),
